@@ -1,0 +1,2 @@
+# Kendi eklemek istediğiniz alan adları (satır başına bir tane).
+# Değişiklikten sonra GoodbyeDPI-TR.cmd ile yeniden kurun.

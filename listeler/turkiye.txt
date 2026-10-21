@@ -1,0 +1,25 @@
+# Türkiye'de erişim engeli bulunan alan adları.
+# Hileler yalnızca bu alan adlarına ve alt alan adlarına uygulanır.
+# Satır başına bir alan adı; "#" sonrası yorumdur. Kendi eklemeleriniz için kullanici.txt'yi kullanın.
+
+# Discord
+discord.com
+discordapp.com
+discordapp.net
+discord.gg
+discord.media
+discord.co
+discord.gift
+discord.new
+discordcdn.com
+discordstatus.com
+dis.gd
+
+# Roblox
+roblox.com
+rbxcdn.com
+rbx.com
+robloxlabs.com
+
+# Wattpad
+wattpad.com

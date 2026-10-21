@@ -75,3 +75,14 @@ Describe 'Write-Liste' {
         ([IO.File]::ReadAllBytes($cikti)[0]) | Should Be ([byte][char]'d')
     }
 }
+
+Describe 'Read-BekciDurumu' {
+    It 'eski sürümün dosyasına eksik alanları ekler' {
+        $Script:BekciDosyasi = Join-Path $TestDrive 'bekci.json'
+        '{"ardisikHata":1,"sonYenidenBul":null,"durduruldu":"2026-10-21T22:57:27","sonListe":null}' | Set-Content $Script:BekciDosyasi
+        $d = Read-BekciDurumu
+        $d.ardisikHata | Should Be 1
+        ($d.PSObject.Properties.Name -contains 'durdurmaNedeni') | Should Be $true
+        { $d.durdurmaNedeni = 'dns' } | Should Not Throw
+    }
+}

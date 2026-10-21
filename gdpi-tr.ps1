@@ -36,7 +36,7 @@ $ProgressPreference = 'SilentlyContinue'   # PS 5.1'de ilerleme çubuğu indirme
 
 # --- Sabitler -------------------------------------------------------------
 
-$Script:Surum = '1.1.0'
+$Script:Surum = '1.1.1'
 $Script:HizmetAdi = 'GoodbyeDPI-TR'
 $Script:GorevAdi = 'GoodbyeDPI-TR Bekci'
 $Script:KurulumDizini = Join-Path $env:ProgramFiles 'GoodbyeDPI-TR'
@@ -378,6 +378,13 @@ function Test-Internet {
     return $false
 }
 
+function Test-AgVar {
+    # DNS'ten bağımsız temel bağlantı: IP adresiyle HTTPS. Modem bağlantısı koparken yapılan
+    # DNS denetimi bütün sunucuları "ölü" gösterip hizmeti boşuna durduruyordu.
+    foreach ($ip in @('1.1.1.1', '8.8.8.8')) { if (Test-Https $ip -Sure 5) { return $true } }
+    return $false
+}
+
 function Find-Doh {
     foreach ($u in $Script:DohAdaylari) {
         if (Test-Https $Script:KontrolSiteleri[0] -DohUrl $u) { return $u }
@@ -527,7 +534,13 @@ function Update-HizmetKomutu($Ayar) {
 
 function Read-BekciDurumu {
     $d = Read-Json $Script:BekciDosyasi
-    if (-not $d) { $d = [pscustomobject]@{ ardisikHata = 0; sonYenidenBul = $null; durduruldu = $null; sonListe = $null } }
+    if (-not $d) { $d = [pscustomobject]@{} }
+    # Eski sürümün dosyasında olmayan alanlar da eklenir (PSCustomObject'e olmayan alan atanamaz).
+    foreach ($alan in 'ardisikHata', 'sonYenidenBul', 'durduruldu', 'durdurmaNedeni', 'sonListe') {
+        if (-not ($d.PSObject.Properties.Name -contains $alan)) {
+            $d | Add-Member -NotePropertyName $alan -NotePropertyValue $(if ($alan -eq 'ardisikHata') { 0 } else { $null })
+        }
+    }
     return $d
 }
 
@@ -873,6 +886,12 @@ function Invoke-Bekci {
     $kaydet = { Save-Json $durum $Script:BekciDosyasi }
     $kontrolAlani = $Script:KontrolSiteleri[0]
 
+    # 0) Ağ hiç yoksa (modem kopuyor, Wi-Fi değişiyor) hiçbir şeye dokunma; sonraki denetimi bekle.
+    if (-not (Test-AgVar)) {
+        Yaz 'Ağ bağlantısı yok; değişiklik yapılmadı.'
+        return
+    }
+
     # 1) Yönlendirilen DNS sunucusu hâlâ yanıt veriyor mu? Vermiyorsa tüm DNS çöker.
     if ($ayar.dns -and -not (Test-DnsSunucusu $ayar.dns @($kontrolAlani))) {
         Yaz "DNS sunucusu yanıt vermiyor: $($ayar.dns.Ad)"
@@ -884,19 +903,24 @@ function Invoke-Bekci {
             Yaz "DNS değiştirildi: $($yeni.Ad)"
         } else {
             Stop-Hizmet $Script:HizmetAdi
-            $durum.durduruldu = (Get-Date).ToString('s'); & $kaydet
+            $durum.durduruldu = (Get-Date).ToString('s'); $durum.durdurmaNedeni = 'dns'; & $kaydet
             Yaz 'Hiçbir DNS sunucusuna ulaşılamıyor; internet kesilmesin diye hizmet durduruldu.'
             return
         }
     }
 
-    # 2) Bekçinin durdurduğu hizmeti bekleme süresi dolunca yeniden dene.
+    # 2) Durdurulmuş hizmeti yeniden aç. DNS yüzünden durdurulduysa DNS şu an çalıştığı için
+    #    hemen; hizmet interneti bozduğu için durdurulduysa bekleme süresi dolunca.
     $h = Get-Hizmet $Script:HizmetAdi
     if ($h.Status -ne 'Running') {
-        if ($durum.durduruldu -and -not (Test-SureGecti $durum.durduruldu $Script:YenidenBulAraligi)) { return }
+        # Neden bilinmiyorsa (1.1.0'dan kalan kayıt) açılır; interneti bozarsa 3. adım yeniden durdurur.
+        $bekle = $durum.durduruldu -and $durum.durdurmaNedeni -eq 'internet' -and
+            -not (Test-SureGecti $durum.durduruldu $Script:YenidenBulAraligi)
+        if ($bekle) { return }
         Start-Service $Script:HizmetAdi -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 3
-        $durum.durduruldu = $null
+        if ($durum.durduruldu) { Yaz 'Hizmet yeniden başlatıldı.' }
+        $durum.durduruldu = $null; $durum.durdurmaNedeni = $null
     }
 
     # 3) Hizmet genel interneti bozuyor mu?
@@ -910,7 +934,7 @@ function Invoke-Bekci {
             return
         }
         Yaz 'Hizmet interneti bozuyordu; durduruldu.'
-        $durum.durduruldu = (Get-Date).ToString('s')
+        $durum.durduruldu = (Get-Date).ToString('s'); $durum.durdurmaNedeni = 'internet'
         $durum.ardisikHata = 99   # yeniden profil aramayı tetikle
     }
 

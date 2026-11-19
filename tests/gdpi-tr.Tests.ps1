@@ -86,3 +86,35 @@ Describe 'Read-BekciDurumu' {
         { $d.durdurmaNedeni = 'dns' } | Should Not Throw
     }
 }
+
+Describe 'Yabancı GoodbyeDPI işlemlerinin korunması' {
+    It 'ölçümde çalışan eski hizmeti kendiliğinden durdurmaz' {
+        Mock Get-Hizmet {
+            if ($Ad -eq 'GoodbyeDPI') { return [pscustomobject]@{ Status = 'Running' } }
+            return $null
+        }
+        Mock Get-YabanciGdpiSurecleri { @() }
+        Mock Stop-Hizmet { }
+        { Invoke-Bul -Hedefler @('discord.com') } | Should Throw
+        Assert-MockCalled Stop-Hizmet -Times 0
+    }
+
+    It 'ölçümde başka goodbyedpi.exe süreçlerine dokunmaz' {
+        Mock Get-Hizmet { return $null }
+        Mock Get-YabanciGdpiSurecleri { return @([pscustomobject]@{ Id = 4242 }) }
+        Mock Stop-Process { }
+        { Invoke-Bul -Hedefler @('discord.com') } | Should Throw
+        Assert-MockCalled Stop-Process -Times 0
+    }
+
+    It 'kurulumda eski hizmeti izinsiz kaldırmaz' {
+        Mock Read-Ayarlar { return [pscustomobject]@{ profil = 'modern-9'; arg = '-9' } }
+        Mock Get-Hizmet {
+            if ($Ad -eq 'GoodbyeDPI') { return [pscustomobject]@{ Status = 'Stopped' } }
+            return $null
+        }
+        Mock Remove-Hizmet { }
+        { Invoke-Kur } | Should Throw
+        Assert-MockCalled Remove-Hizmet -Times 0
+    }
+}

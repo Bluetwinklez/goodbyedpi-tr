@@ -162,7 +162,7 @@ Describe 'Güvenli alan adı listesi güncellemesi' {
         (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'old.example'
         (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Not Match 'new.example'
         @(Get-ChildItem $Script:VeriDizini -File -ErrorAction SilentlyContinue).Count | Should Be 0
-        Assert-MockCalled Start-Service -Times 2
+        Assert-MockCalled Start-Service -Times 2 -Scope It
     }
     It 'servis çalışmıyorken doğrulanmış listeleri günceller, servis başlatmaz' {
         Mock Get-Hizmet { $null }
@@ -170,6 +170,6 @@ Describe 'Güvenli alan adı listesi güncellemesi' {
         (Update-Liste) | Should Be $true
         (Get-Content $Script:KaynakListe -Raw -Encoding UTF8) | Should Match 'new.example'
         (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'new.example'
-        Assert-MockCalled Start-Service -Times 0
+        Assert-MockCalled Start-Service -Times 0 -Scope It
     }
 }

@@ -42,3 +42,7 @@ Windows CI runs Pester 4.10.1 and PSScriptAnalyzer. See the workflow for the exa
 The wrapper is MIT licensed. Upstream GoodbyeDPI and WinDivert have their own licenses.
 
 [Security policy](SECURITY.md) · [Repository security audit](SECURITY_AUDIT.md)
+
+## Safer domain-list updates
+
+The `liste-guncelle` command first validates the downloaded source, generates the merged list in a temporary file, and backs up both active files before applying them. If a running GoodbyeDPI-TR service fails to restart, both files are restored and an error is shown. The watchdog treats only successful updates as completed; on failure it retries after one hour instead of waiting a full day. Existing user domain lists are preserved. Manual validation on a Windows VM is still recommended before deploying a new release.

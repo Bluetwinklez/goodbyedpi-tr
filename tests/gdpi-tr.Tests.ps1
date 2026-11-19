@@ -118,3 +118,48 @@ Describe 'Yabancı GoodbyeDPI işlemlerinin korunması' {
         Assert-MockCalled Remove-Hizmet -Times 0
     }
 }
+
+
+Describe 'Gizlilik korumalı rapor' {
+    It 'yalnız yerel bilgileri toplar, özel ağ adresleri ve hedefleri sızdırmaz' {
+        $once = $Script:KurulumDizini
+        try {
+            $Script:KurulumDizini = $TestDrive
+            Set-Content (Join-Path $TestDrive 'liste.txt') -Value @('discord.com', 'roblox.com') -Encoding ASCII
+            Mock Get-Hizmet { [pscustomobject]@{ Status = 'Running' } }
+            Mock Get-ScheduledTask { [pscustomobject]@{ State = 'Ready' } }
+            Mock Get-Mimari { 'x86_64' }
+            Mock Read-Ayarlar {
+                [pscustomobject]@{
+                    profil = 'modern-9'
+                    genel = $false
+                    dns = [pscustomobject]@{ Ad = 'Quad9'; V4 = '9.9.9.10' }
+                    hedefler = @('secret.example.com')
+                    iss = 'Private ISP account'
+                }
+            }
+            Mock Test-Https { throw 'Ağ isteği yapılmamalı' }
+            Mock Start-Service { throw 'Servis değiştirilmemeli' }
+            $r = Get-TaniRapor
+            $json = $r | ConvertTo-Json -Depth 4
+            $r.serviceStatus | Should Be 'Running'
+            $r.watchdogStatus | Should Be 'Ready'
+            $r.activeDomainCount | Should Be 2
+            $r.selectedProfile | Should Be 'modern-9'
+            $r.configurationReadable | Should Be $true
+            $json | Should Not Match '9\.9\.9\.10|secret\.example\.com|Private ISP|discord\.com|roblox\.com'
+            Assert-MockCalled Test-Https -Times 0
+            Assert-MockCalled Start-Service -Times 0
+        } finally { $Script:KurulumDizini = $once }
+    }
+    It 'bozuk ayarlarda da yalnız hata durumu raporlar' {
+        Mock Read-Ayarlar { throw 'C:\Users\secret-user\broken.json' }
+        Mock Get-Hizmet { return $null }
+        Mock Get-ScheduledTask { return $null }
+        Mock Get-Mimari { 'x86_64' }
+        $r = Get-TaniRapor
+        $r.configurationReadable | Should Be $false
+        $r.configurationPresent | Should Be $false
+        ($r | ConvertTo-Json) | Should Not Match 'secret-user|broken\.json'
+    }
+}

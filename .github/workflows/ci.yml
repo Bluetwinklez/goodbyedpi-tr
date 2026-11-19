@@ -24,9 +24,27 @@ jobs:
         shell: powershell
         run: |
           Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
-          $s = Invoke-ScriptAnalyzer -Path ./gdpi-tr.ps1 -Severity Error
+          $s = @(
+            Invoke-ScriptAnalyzer -Path ./gdpi-tr.ps1 -Severity Error
+            Invoke-ScriptAnalyzer -Path ./scripts/package-release.ps1 -Severity Error
+          ) | Where-Object { $_ }
           $s | Format-Table -AutoSize
           if ($s) { exit 1 }
+      - name: Test release ZIP contents and SHA-256 manifest
+        shell: powershell
+        run: |
+          & ./scripts/package-release.ps1 -Version v0.0.0 -OutputDirectory $env:RUNNER_TEMP | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP 'GoodbyeDPI-TR-v0.0.0.zip'
+          $sum = "$zip.sha256"
+          if (!(Test-Path $zip) -or !(Test-Path $sum)) { throw 'Release asset missing' }
+          $expected = ((Get-Content $sum -Raw).Trim() -split ' ')[0]
+          $actual = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($expected -ne $actual) { throw 'Release ZIP checksum mismatch' }
+          $extract = Join-Path $env:RUNNER_TEMP 'gdpi-package-smoke'
+          Expand-Archive -Path $zip -DestinationPath $extract -Force
+          foreach ($file in @('GoodbyeDPI-TR.cmd', 'gdpi-tr.ps1', 'README.md', 'README.tr.md', 'SECURITY.md', 'LICENSE', 'listeler/turkiye.txt')) {
+            if (!(Test-Path (Join-Path $extract "GoodbyeDPI-TR-v0.0.0/$file"))) { throw "Missing ZIP entry: $file" }
+          }
 
   release:
     needs: test
@@ -41,9 +59,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          & ./scripts/package-release.ps1 -Version $env:GITHUB_REF_NAME -OutputDirectory '.' | Out-Null
           $ad = "GoodbyeDPI-TR-$env:GITHUB_REF_NAME"
-          New-Item -ItemType Directory $ad | Out-Null
-          Copy-Item GoodbyeDPI-TR.cmd, gdpi-tr.ps1, README.md, LICENSE $ad
-          Copy-Item listeler $ad -Recurse
-          Compress-Archive $ad "$ad.zip"
-          gh release create $env:GITHUB_REF_NAME "$ad.zip" --title "GoodbyeDPI-TR $env:GITHUB_REF_NAME" --generate-notes
+          gh release create $env:GITHUB_REF_NAME "$ad.zip" "$ad.zip.sha256" --title "GoodbyeDPI-TR $env:GITHUB_REF_NAME" --generate-notes

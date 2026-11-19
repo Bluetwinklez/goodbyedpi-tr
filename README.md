@@ -48,3 +48,9 @@ The wrapper is MIT licensed. Upstream GoodbyeDPI and WinDivert have their own li
 Run `./gdpi-tr.ps1 rapor` (no administrator privileges required) or choose menu option 8. A local `GoodbyeDPI-TR-rapor-*.json` file is written to the current user's temporary directory.
 
 The read-only report contains the application version, service/watchdog status, selected profile, DNS provider name and active domain count. It **never includes raw logs, usernames, full filesystem paths, IP addresses or target domains**. No telemetry is uploaded, no connectivity checks are performed and no services are modified. Always review the JSON before sharing.
+
+## Release archive integrity
+
+Releases include the Turkish README, English README and security policy alongside the launcher and domain lists. Each versioned ZIP has a companion `.zip.sha256` manifest containing its SHA-256 digest.
+
+Verify a downloaded release with PowerShell: `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip`. Compare the output to the corresponding `.zip.sha256` asset. Download and verify only official project releases.

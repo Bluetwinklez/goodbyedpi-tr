@@ -42,3 +42,9 @@ Windows CI runs Pester 4.10.1 and PSScriptAnalyzer. See the workflow for the exa
 The wrapper is MIT licensed. Upstream GoodbyeDPI and WinDivert have their own licenses.
 
 [Security policy](SECURITY.md) · [Repository security audit](SECURITY_AUDIT.md)
+
+## Privacy-safe diagnostics
+
+Run `./gdpi-tr.ps1 rapor` (no administrator privileges required) or choose menu option 8. A local `GoodbyeDPI-TR-rapor-*.json` file is written to the current user's temporary directory.
+
+The read-only report contains the application version, service/watchdog status, selected profile, DNS provider name and active domain count. It **never includes raw logs, usernames, full filesystem paths, IP addresses or target domains**. No telemetry is uploaded, no connectivity checks are performed and no services are modified. Always review the JSON before sharing.

@@ -525,7 +525,7 @@ function Read-BekciDurumu {
     $d = Read-Json $Script:BekciDosyasi
     if (-not $d) { $d = [pscustomobject]@{} }
     # Eski sürümün dosyasında olmayan alanlar da eklenir (PSCustomObject'e olmayan alan atanamaz).
-    foreach ($alan in 'ardisikHata', 'sonYenidenBul', 'durduruldu', 'durdurmaNedeni', 'sonListe') {
+    foreach ($alan in 'ardisikHata', 'sonYenidenBul', 'durduruldu', 'durdurmaNedeni', 'sonListe', 'sonListeDeneme') {
         if (-not ($d.PSObject.Properties.Name -contains $alan)) {
             $d | Add-Member -NotePropertyName $alan -NotePropertyValue $(if ($alan -eq 'ardisikHata') { 0 } else { $null })
         }
@@ -999,10 +999,17 @@ function Invoke-Bekci {
         }
     }
 
-    # 5) Günde bir liste güncellemesi.
-    if (Test-SureGecti $durum.sonListe (New-TimeSpan -Days 1)) {
-        try { if (Update-Liste) { Yaz 'Alan adı listesi güncellendi.' } } catch { Yaz "Liste güncellenemedi: $($_.Exception.Message)" }
-        $durum.sonListe = (Get-Date).ToString('s')
+    # 5) Başarılı güncellemeden sonra günde bir dene. Hata olursa bir saat sonra yeniden
+    # dene; başarısız isteği son başarılı güncelleme olarak kaydetme.
+    if ((Test-SureGecti $durum.sonListe (New-TimeSpan -Days 1)) -and
+        (Test-SureGecti $durum.sonListeDeneme (New-TimeSpan -Hours 1))) {
+        $durum.sonListeDeneme = (Get-Date).ToString('s')
+        try {
+            if (Update-Liste) { Yaz 'Alan adı listesi güncellendi.' }
+            $durum.sonListe = (Get-Date).ToString('s')
+        } catch {
+            Yaz "Liste güncellenemedi; bir saat sonra yeniden denenecek: $($_.Exception.Message)"
+        }
     }
     & $kaydet
 }

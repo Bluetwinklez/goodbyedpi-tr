@@ -45,3 +45,7 @@ A source review found that the profile probe stopped foreign GoodbyeDPI processe
 ## 19 November 2026 — Privacy-safe read-only diagnostics
 
 Added an offline JSON diagnostic report accessible without administrator privileges. It exposes only service/watchdog status, profile and DNS provider names, application version and domain count, deliberately excluding raw logs, usernames, full paths, IP addresses and target domains. It does not perform network requests or modify Windows services. Added Pester coverage for privacy and malformed configuration. Report content should still be reviewed before public disclosure.
+
+## 19 November 2026 — Safer list updates and watchdog retry
+
+The domain-list updater previously overwrote live source/merged files directly and restarted the service without a rollback path. A failed restart could leave live files inconsistent. The revised implementation validates and stages both files, keeps separate temporary backups, and attempts to restore both and restart the former service on apply errors. The watchdog now records successful updates only, with one-hour retry throttling after failure. Added mocked Pester regression tests for rejecting malformed input, rollback on restart failure, cleanup and updates while the service is stopped. Windows live-driver tests remain outstanding.

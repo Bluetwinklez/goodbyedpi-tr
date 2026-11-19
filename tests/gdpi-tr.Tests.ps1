@@ -83,6 +83,7 @@ Describe 'Read-BekciDurumu' {
         $d = Read-BekciDurumu
         $d.ardisikHata | Should Be 1
         ($d.PSObject.Properties.Name -contains 'durdurmaNedeni') | Should Be $true
+        ($d.PSObject.Properties.Name -contains 'sonListeDeneme') | Should Be $true
         { $d.durdurmaNedeni = 'dns' } | Should Not Throw
     }
 }
@@ -161,5 +162,58 @@ Describe 'Gizlilik korumalı rapor' {
         $r.configurationReadable | Should Be $false
         $r.configurationPresent | Should Be $false
         ($r | ConvertTo-Json) | Should Not Match 'secret-user|broken\.json'
+    }
+}
+
+Describe 'Güvenli alan adı listesi güncellemesi' {
+    BeforeEach {
+        $Script:EskiKurulum = $Script:KurulumDizini
+        $Script:EskiVeri = $Script:VeriDizini
+        $Script:KurulumDizini = Join-Path $TestDrive 'installed'
+        $Script:VeriDizini = Join-Path $TestDrive 'data'
+        $Script:KaynakListe = Join-Path $Script:KurulumDizini 'listeler\turkiye.txt'
+        $Script:EtkinListe = Join-Path $Script:KurulumDizini 'liste.txt'
+        New-Item -ItemType Directory -Force -Path (Split-Path $Script:KaynakListe) | Out-Null
+        Set-Content -Path $Script:KaynakListe -Value @('discord.com', 'roblox.com', 'old.example') -Encoding UTF8
+        Set-Content -Path $Script:EtkinListe -Value @('discord.com', 'roblox.com', 'old.example') -Encoding ASCII
+        Mock Read-Ayarlar { $null }
+        Mock Invoke-WebRequest {
+            [pscustomobject]@{ Content = [string]::Join([Environment]::NewLine, @('discord.com', 'roblox.com', 'new.example')) }
+        }
+    }
+    AfterEach {
+        $Script:KurulumDizini = $Script:EskiKurulum
+        $Script:VeriDizini = $Script:EskiVeri
+    }
+    It 'geçersiz uzak listeyi mevcut dosyalara dokunmadan reddeder' {
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content = 'evil --set-ttl 1' } }
+        Mock Stop-Hizmet { throw 'Hizmete dokunulmamalı' }
+        { Update-Liste } | Should Throw
+        (Get-Content $Script:KaynakListe -Raw -Encoding UTF8) | Should Match 'old.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'old.example'
+        Assert-MockCalled Stop-Hizmet -Times 0
+    }
+    It 'servis başlatılamazsa iki listeyi de geri yükler ve geçici dosyaları temizler' {
+        Mock Get-Hizmet { [pscustomobject]@{ Status = 'Running' } }
+        Mock Stop-Hizmet { }
+        $script:UpdateListStarts = 0
+        Mock Start-Service {
+            $script:UpdateListStarts++
+            if ($script:UpdateListStarts -eq 1) { throw 'Simulated startup failure' }
+        }
+        { Update-Liste } | Should Throw
+        (Get-Content $Script:KaynakListe -Raw -Encoding UTF8) | Should Match 'old.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'old.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Not Match 'new.example'
+        @(Get-ChildItem $Script:VeriDizini -File -ErrorAction SilentlyContinue).Count | Should Be 0
+        Assert-MockCalled Start-Service -Times 2 -Scope It
+    }
+    It 'servis çalışmıyorken doğrulanmış listeleri günceller, servis başlatmaz' {
+        Mock Get-Hizmet { $null }
+        Mock Start-Service { throw 'Servis başlatılmamalı' }
+        (Update-Liste) | Should Be $true
+        (Get-Content $Script:KaynakListe -Raw -Encoding UTF8) | Should Match 'new.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'new.example'
+        Assert-MockCalled Start-Service -Times 0 -Scope It
     }
 }

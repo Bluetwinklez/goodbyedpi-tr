@@ -91,3 +91,9 @@ Bu depodaki betikler MIT lisanslıdır. GoodbyeDPI Apache-2.0, WinDivert LGPL-3.
 Menüden **8) Gizlilik korumalı teşhis raporu oluştur** seçeneğini veya PowerShell'den `./gdpi-tr.ps1 rapor` komutunu kullanın. Yönetici izni gerekmez. Kullanıcının geçici klasöründe `GoodbyeDPI-TR-rapor-*.json` dosyası oluşur.
 
 Rapor sürüm, servis/bekçi durumu, profil adı, DNS sağlayıcı adı ve etkin alan adı sayısını içerir. **IP adresi, kullanıcı adı, tam dosya yolu, hedef alan adı, ham günlük veya hesap bilgisi içermez.** Herhangi bir sunucuya bilgi göndermez, bağlantı testi yapmaz ve servisleri değiştirmez. Paylaşmadan önce içeriği yine de inceleyin.
+
+## Yayın ZIP dosyasının doğrulanması
+
+Yeni sürümler Türkçe kullanım kılavuzunu (`README.tr.md`), güvenlik politikasını ve bir SHA-256 doğrulama dosyasını (`.zip.sha256`) içerir. ZIP dosyasını indirdikten sonra PowerShell'de `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip` çalıştırıp sonucu aynı sürümdeki `.zip.sha256` dosyasındaki değerle karşılaştırın.
+
+Bu yöntem indirdiğiniz dosyanın beklenen sürüm dosyasıyla aynı olduğunu doğrular; projenin kaynağına veya dağıtım hesabına duyulan güvenin yerini tutmaz.

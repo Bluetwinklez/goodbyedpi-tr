@@ -37,3 +37,7 @@ Main READMEs and new maintenance documents are English. Historical Turkish recor
 Windows installer and service manager for GoodbyeDPI with connectivity checks and recovery for Turkish networks.
 
 The current GitHub integration rejected repository metadata edits with HTTP 403. This prepared description can be applied when repository administration access is available; it has not been represented as an applied settings change.
+
+## 19 November 2026 — Shared service and driver safety
+
+A source review found that the profile probe stopped foreign GoodbyeDPI processes/services, installation removed the legacy service without an explicit opt-in, and uninstall could delete shared WinDivert services based only on a short process-name allowlist. These actions risk disrupting unrelated networking tools. The hardening branch now fails safely when another instance conflicts, requires an explicit legacy-service removal choice, and never uninstalls shared WinDivert drivers automatically. Added Pester regression tests for no foreign-process termination during probe and no legacy-service removal during installation. Hardware/driver behavior still requires an administrator-led Windows test.

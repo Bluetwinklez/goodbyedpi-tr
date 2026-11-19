@@ -15,7 +15,7 @@ Türkiye için [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI) kurulum ve y
 | Kurulumdan sonra DNS sunucusu düşerse ya da ağ değişirse internet tamamen gidiyor | Bekçi görevi açılışta, 15 dakikada bir ve ağ değişiminde denetler: DNS'i değiştirir, profili yeniden bulur ya da hizmeti durdurur |
 | Engel listesi elle güncelleniyor | Liste günde bir kez bu depodan güncellenir (her satır doğrulanır) |
 | Klasör taşınınca hizmet bozuluyor | `C:\Program Files\GoodbyeDPI-TR` altına sabit kurulur |
-| Dosyaları silmek yetmiyor, WinDivert sürücüsü geride kalıyor | `kaldir` hizmeti, sürücüyü ve dosyaları siler |
+| Dosyaları silmek yetmiyor, WinDivert sürücüsü geride kalıyor | `kaldir` yalnız GoodbyeDPI-TR hizmetini ve dosyalarını siler; başka araçların kullanabileceği ortak WinDivert sürücüsünü korur |
 | Kaspersky/Avast çakışmaları elle bulunuyor | `doktor` komutu çakışan yazılımları, VPN'leri ve diğer DPI araçlarını listeler |
 | ZIP içinde ikili dosyalar dağıtılıyor | Resmi ValdikSS sürümü indirilir; zip ve içindeki her dosya SHA256 ile doğrulanır |
 | Kaldırmak için indirilen klasörü saklamak gerekiyor | Başlat menüsü kısayolu ve Programlar ve Özellikler kaydı eklenir |
@@ -78,3 +78,9 @@ GitHub Actions her gönderimde Pester ve PSScriptAnalyzer çalıştırır. `v*` 
 ## Lisans
 
 Bu depodaki betikler MIT lisanslıdır. GoodbyeDPI Apache-2.0, WinDivert LGPL-3.0/GPL-2.0 lisanslıdır; ikisi de kurulum sırasında resmi kaynaktan indirilir.
+
+## Diğer GoodbyeDPI kurulumlarıyla çakışma
+
+`bul` ve `kur`, başka `goodbyedpi.exe` süreçlerini veya eski `GoodbyeDPI` hizmetini **izinsiz durdurmaz ya da kaldırmaz**. Çakışma varsa açıklayıcı bir uyarı verir; önce ilgili uygulamayı kendiniz kapatın. Eski hizmeti bilinçli olarak kaldırmak için `kaldir -Eski` kullanılabilir. Bu seçenek bile farklı uygulamaların bağımsız süreçlerine dokunmaz.
+
+`kaldir`, bu uygulamanın hizmetini ve kurulum dosyalarını siler; sistemde ortak kullanılan `WinDivert` sürücülerini otomatik kaldırmaz. Ağ sürücülerinin elle kaldırılması yalnızca hangi programın kullandığından emin olunduğunda yapılmalıdır.

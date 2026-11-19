@@ -501,19 +501,8 @@ function Get-WinDivertKullanicilari {
     return @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $adlar -contains $_.ProcessName })
 }
 
-function Remove-WinDivert {
-    if (Get-WinDivertKullanicilari) {
-        Uyari 'WinDivert başka bir araç tarafından kullanılıyor, sürücüye dokunulmadı.'
-        return
-    }
-    foreach ($ad in @('WinDivert', 'WinDivert1.4', 'WinDivert14')) {
-        if (Get-Hizmet $ad) {
-            & sc.exe stop $ad | Out-Null
-            & sc.exe delete $ad | Out-Null
-            Basari "$ad sürücüsü kaldırıldı"
-        }
-    }
-}
+# WinDivert paylaşılan bir sistem sürücüsüdür; sahibini doğrulamadan silinmez.
+# GoodbyeDPI-TR kaldırması yalnız kendi hizmetini ve dosyalarını temizler.
 
 function Get-HizmetKomutu($Ayar) {
     $exe = Join-Path $Script:KurulumDizini 'bin\goodbyedpi.exe'
@@ -555,25 +544,25 @@ function Invoke-Bul {
     param([string[]]$Hedefler, [switch]$Genel)
     Baslik 'Çalışan ayar aranıyor'
 
-    # Çalışan bir GoodbyeDPI ölçümü bozar: hizmet açıkken engel "yok" görünür.
+    # Başka bir aracın hizmetini veya sürecini otomatik durdurma.
+    # Bir çakışma varsa kullanıcıya haber ver; yalnız kendi hizmetimizi ölçüm için geçici durdur.
     $hizmetCalisiyordu = $false
-    $h = Get-Hizmet $Script:HizmetAdi
-    if ($h -and $h.Status -eq 'Running') {
-        $hizmetCalisiyordu = $true
-        Yaz '  Ölçüm için GoodbyeDPI-TR hizmeti geçici olarak durduruluyor...'
-        Stop-Hizmet $Script:HizmetAdi
-    }
-    $eski = Get-Hizmet 'GoodbyeDPI'
-    if ($eski -and $eski.Status -eq 'Running') {
-        Uyari "Eski 'GoodbyeDPI' hizmeti çalışıyor; ölçüm için durduruluyor (kur komutu tamamen kaldırır)."
-        Stop-Hizmet 'GoodbyeDPI'
-    }
-    foreach ($s in Get-YabanciGdpiSurecleri) {
-        Uyari "Başka bir goodbyedpi.exe çalışıyor (PID $($s.Id), $($s.Path)); ölçüm için kapatılıyor."
-        Stop-Process -Id $s.Id -Force -ErrorAction SilentlyContinue
-    }
-
     try {
+        $eski = Get-Hizmet 'GoodbyeDPI'
+        if ($eski -and $eski.Status -eq 'Running') {
+            throw "Eski 'GoodbyeDPI' hizmeti çalışıyor. Ölçüm için hizmeti kendiniz durdurun; bu araç başka hizmetleri durdurmaz."
+        }
+        $yabanci = @(Get-YabanciGdpiSurecleri)
+        if ($yabanci.Count -gt 0) {
+            throw "Başka bir goodbyedpi.exe çalışıyor (PID: $(($yabanci | ForEach-Object Id) -join ', ')). Önce kendi uygulamasından durdurun; süreçlere dokunulmadı."
+        }
+        $h = Get-Hizmet $Script:HizmetAdi
+        if ($h -and $h.Status -eq 'Running') {
+            Yaz '  Ölçüm için yalnız GoodbyeDPI-TR hizmeti geçici olarak durduruluyor...'
+            Stop-Hizmet $Script:HizmetAdi
+            $hizmetCalisiyordu = $true
+        }
+
         if (-not (Test-Internet)) { throw 'İnternet bağlantısı yok (kontrol sitelerine ulaşılamadı). Önce bağlantınızı kontrol edin.' }
 
         $doh = Find-Doh
@@ -702,8 +691,13 @@ function Invoke-Kur {
     }
     Baslik 'Kurulum'
 
-    if (Remove-Hizmet 'GoodbyeDPI') { Uyari "Eski 'GoodbyeDPI' hizmeti çakışmaması için kaldırıldı." }
-    foreach ($s in Get-YabanciGdpiSurecleri) { Stop-Process -Id $s.Id -Force -ErrorAction SilentlyContinue }
+    if (Get-Hizmet 'GoodbyeDPI') {
+        throw "Eski 'GoodbyeDPI' hizmeti yüklü. Başka yazılımı otomatik kaldırmıyoruz; önce bu hizmeti kendiniz kaldırın veya 'kaldir -Eski' komutunu bilinçli olarak çalıştırın."
+    }
+    $yabanci = @(Get-YabanciGdpiSurecleri)
+    if ($yabanci.Count -gt 0) {
+        throw "Başka bir goodbyedpi.exe çalışıyor (PID: $(($yabanci | ForEach-Object Id) -join ', ')). Kurulum için önce ilgili uygulamadan kapatın."
+    }
     Remove-Hizmet $Script:HizmetAdi | Out-Null
 
     $bin = Get-Ikililer
@@ -733,7 +727,7 @@ function Invoke-Kur {
     if (-not (Test-Internet)) {
         Hata 'Kurulumdan sonra internet çalışmadı. Değişiklik geri alınıyor.'
         Remove-Hizmet $Script:HizmetAdi | Out-Null
-        Remove-WinDivert
+        # WinDivert başka yazılımların da olabilir; sistem sürücülerini silme.
         Yaz '  "doktor" komutuyla çakışan yazılımları kontrol edin (Kaspersky, Avast vb.).'
         return
     }
@@ -757,13 +751,13 @@ function Invoke-Kaldir {
     if (Remove-Hizmet $Script:HizmetAdi) { Basari "$Script:HizmetAdi hizmeti kaldırıldı" } else { Yaz '  GoodbyeDPI-TR hizmeti yok.' }
     if ($Eski) {
         if (Remove-Hizmet 'GoodbyeDPI') { Basari 'Eski GoodbyeDPI hizmeti kaldırıldı' }
-        foreach ($s in Get-YabanciGdpiSurecleri) {
-            Stop-Process -Id $s.Id -Force -ErrorAction SilentlyContinue
-            Basari "Açık kalan goodbyedpi.exe kapatıldı (PID $($s.Id))"
-        }
+    }
+    $yabanci = @(Get-YabanciGdpiSurecleri)
+    if ($yabanci.Count -gt 0) {
+        Uyari "Diğer goodbyedpi.exe süreçleri çalışmaya devam ediyor (PID: $(($yabanci | ForEach-Object Id) -join ', ')). Bu süreçler otomatik kapatılmadı."
     }
     Start-Sleep -Seconds 1
-    Remove-WinDivert
+    Uyari 'Paylaşılan WinDivert sürücüleri kaldırılmadı; başka araçlar bunları kullanıyor olabilir.'
     foreach ($y in @($Script:Kisayol, $Script:KaldirmaAnahtari)) {
         if (Test-Path $y) { Remove-Item $y -Recurse -Force -ErrorAction SilentlyContinue }
     }

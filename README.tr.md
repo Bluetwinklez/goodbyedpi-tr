@@ -34,6 +34,7 @@ Komut satırından (yönetici PowerShell):
 .\gdpi-tr.ps1 durum                 # hizmet, bekçi, profil ve erişim durumu
 .\gdpi-tr.ps1 liste-guncelle        # engelli alan adı listesini güncelle
 .\gdpi-tr.ps1 doktor                # sorun tarama
+.\gdpi-tr.ps1 rapor                 # gizlilik korumalı yerel JSON raporu
 .\gdpi-tr.ps1 kaldir                # tamamen kaldır
 .\gdpi-tr.ps1 kaldir -Eski          # eski GoodbyeDPI-Turkey hizmetini de kaldır
 .\gdpi-tr.ps1 bul -Hedef ornek.com  # farklı bir siteye göre ayar bul
@@ -84,3 +85,9 @@ Bu depodaki betikler MIT lisanslıdır. GoodbyeDPI Apache-2.0, WinDivert LGPL-3.
 `bul` ve `kur`, başka `goodbyedpi.exe` süreçlerini veya eski `GoodbyeDPI` hizmetini **izinsiz durdurmaz ya da kaldırmaz**. Çakışma varsa açıklayıcı bir uyarı verir; önce ilgili uygulamayı kendiniz kapatın. Eski hizmeti bilinçli olarak kaldırmak için `kaldir -Eski` kullanılabilir. Bu seçenek bile farklı uygulamaların bağımsız süreçlerine dokunmaz.
 
 `kaldir`, bu uygulamanın hizmetini ve kurulum dosyalarını siler; sistemde ortak kullanılan `WinDivert` sürücülerini otomatik kaldırmaz. Ağ sürücülerinin elle kaldırılması yalnızca hangi programın kullandığından emin olunduğunda yapılmalıdır.
+
+## Gizlilik korumalı teşhis raporu
+
+Menüden **8) Gizlilik korumalı teşhis raporu oluştur** seçeneğini veya PowerShell'den `./gdpi-tr.ps1 rapor` komutunu kullanın. Yönetici izni gerekmez. Kullanıcının geçici klasöründe `GoodbyeDPI-TR-rapor-*.json` dosyası oluşur.
+
+Rapor sürüm, servis/bekçi durumu, profil adı, DNS sağlayıcı adı ve etkin alan adı sayısını içerir. **IP adresi, kullanıcı adı, tam dosya yolu, hedef alan adı, ham günlük veya hesap bilgisi içermez.** Herhangi bir sunucuya bilgi göndermez, bağlantı testi yapmaz ve servisleri değiştirmez. Paylaşmadan önce içeriği yine de inceleyin.

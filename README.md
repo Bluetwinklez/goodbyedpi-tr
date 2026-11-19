@@ -52,3 +52,9 @@ The read-only report contains the application version, service/watchdog status, 
 ## Safer domain-list updates
 
 The `liste-guncelle` command first validates the downloaded source, generates the merged list in a temporary file, and backs up both active files before applying them. If a running GoodbyeDPI-TR service fails to restart, both files are restored and an error is shown. The watchdog treats only successful updates as completed; on failure it retries after one hour instead of waiting a full day. Existing user domain lists are preserved. Manual validation on a Windows VM is still recommended before deploying a new release.
+
+## Release archive integrity
+
+Releases include the Turkish README, English README and security policy alongside the launcher and domain lists. Each versioned ZIP has a companion `.zip.sha256` manifest containing its SHA-256 digest.
+
+Verify a downloaded release with PowerShell: `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip`. Compare the output to the corresponding `.zip.sha256` asset. Download and verify only official project releases.

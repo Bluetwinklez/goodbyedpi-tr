@@ -95,3 +95,9 @@ Rapor sürüm, servis/bekçi durumu, profil adı, DNS sağlayıcı adı ve etkin
 ## Hata durumunda geri alınabilen liste güncellemesi
 
 `liste-guncelle` önce indirilen alan adlarını doğrular, geçici dosyada yeni birleşik listeyi oluşturur ve etkin listelerin yedeğini alır. Hizmet yeni listeyle yeniden başlatılamazsa hem Türkiye listesini hem etkin listeyi eski haline getirip hizmeti eski ayarlarla yeniden başlatmayı dener. Kullanıcının eklediği alan adları korunur. Bekçi başarısız güncellemeyi başarılı saymaz; 1 saat arayla yeniden dener. Gerçek servis/sürücü davranışı yeni sürüm yayınlanmadan önce Windows ortamında kontrol edilmelidir.
+
+## Yayın ZIP dosyasının doğrulanması
+
+Yeni sürümler Türkçe kullanım kılavuzunu (`README.tr.md`), güvenlik politikasını ve bir SHA-256 doğrulama dosyasını (`.zip.sha256`) içerir. ZIP dosyasını indirdikten sonra PowerShell'de `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip` çalıştırıp sonucu aynı sürümdeki `.zip.sha256` dosyasındaki değerle karşılaştırın.
+
+Bu yöntem indirdiğiniz dosyanın beklenen sürüm dosyasıyla aynı olduğunu doğrular; projenin kaynağına veya dağıtım hesabına duyulan güvenin yerini tutmaz.

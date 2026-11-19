@@ -526,7 +526,7 @@ function Read-BekciDurumu {
     $d = Read-Json $Script:BekciDosyasi
     if (-not $d) { $d = [pscustomobject]@{} }
     # Eski sürümün dosyasında olmayan alanlar da eklenir (PSCustomObject'e olmayan alan atanamaz).
-    foreach ($alan in 'ardisikHata', 'sonYenidenBul', 'durduruldu', 'durdurmaNedeni', 'sonListe') {
+    foreach ($alan in 'ardisikHata', 'sonYenidenBul', 'durduruldu', 'durdurmaNedeni', 'sonListe', 'sonListeDeneme') {
         if (-not ($d.PSObject.Properties.Name -contains $alan)) {
             $d | Add-Member -NotePropertyName $alan -NotePropertyValue $(if ($alan -eq 'ardisikHata') { 0 } else { $null })
         }
@@ -903,25 +903,75 @@ function Invoke-Doktor {
 }
 
 function Update-Liste {
-    # GitHub'daki güncel listeyi indirir; her satırı doğrular. Değiştiyse $true.
+    # Önce kaynağı ve birleşik listeyi ayrı dosyalarda doğrula. Bir hata varsa etkin
+    # listeye dokunma; hizmet başlangıcı başarısızsa eski dosyaları geri yükle.
     $hedef = Join-Path $Script:KurulumDizini 'listeler\turkiye.txt'
-    if (-not (Test-Path (Split-Path $hedef))) { throw 'GoodbyeDPI-TR kurulu değil.' }
+    $etkin = Join-Path $Script:KurulumDizini 'liste.txt'
+    if (-not (Test-Path $hedef)) { throw 'GoodbyeDPI-TR kurulu değil veya Türkiye listesi bulunamadı.' }
+
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $icerik = (Invoke-WebRequest -Uri $Script:ListeUrl -UseBasicParsing -TimeoutSec 15).Content
-    $alanlar = @($icerik -split "`r?`n" | ForEach-Object { ($_ -replace '#.*$', '').Trim().ToLowerInvariant() } | Where-Object { $_ })
+    $icerik = [string](Invoke-WebRequest -Uri $Script:ListeUrl -UseBasicParsing -TimeoutSec 15).Content
+    $alanlar = @($icerik -split "\r?\n" | ForEach-Object { ($_ -replace '#.*$', '').Trim().ToLowerInvariant() } | Where-Object { $_ })
     $gecersiz = @($alanlar | Where-Object { -not (Test-AlanAdi $_) })
-    if ($gecersiz -or $alanlar.Count -lt 3 -or $alanlar.Count -gt 5000) {
+    if ($gecersiz.Count -gt 0 -or $alanlar.Count -lt 3 -or $alanlar.Count -gt 5000) {
         throw "İndirilen liste geçersiz ($($alanlar.Count) satır, $($gecersiz.Count) hatalı); güncellenmedi."
     }
-    $eski = ''
-    if (Test-Path $hedef) { $eski = (Get-Content $hedef -Raw -Encoding UTF8) -replace "`r", '' }
-    if ($eski.Trim() -eq ($icerik -replace "`r", '').Trim()) { return $false }
-    Set-Content -Path $hedef -Value $icerik.TrimEnd() -Encoding UTF8
-    $ayar = Read-Ayarlar
-    $ekler = @(); if ($ayar) { $ekler = @($ayar.hedefler) }
-    Write-Liste (Get-ListeDosyalari $Script:KurulumDizini) $ekler (Join-Path $Script:KurulumDizini 'liste.txt') | Out-Null
-    if (Get-Hizmet $Script:HizmetAdi) { Stop-Hizmet $Script:HizmetAdi; Start-Service $Script:HizmetAdi }
-    return $true
+    $eskiIcerik = Get-Content $hedef -Raw -Encoding UTF8
+    if (($eskiIcerik -replace '\r', '').Trim() -eq ($icerik -replace '\r', '').Trim()) { return $false }
+
+    $id = [guid]::NewGuid().ToString('N')
+    $taslakKaynak = Join-Path $Script:VeriDizini "liste-kaynak-$id.tmp"
+    $taslakEtkin = Join-Path $Script:VeriDizini "liste-etkin-$id.tmp"
+    $yedekKaynak = Join-Path $Script:VeriDizini "liste-kaynak-$id.bak"
+    $yedekEtkin = Join-Path $Script:VeriDizini "liste-etkin-$id.bak"
+    $etkinVardi = Test-Path $etkin
+    try {
+        New-Item -ItemType Directory -Path $Script:VeriDizini -Force | Out-Null
+        Set-Content -Path $taslakKaynak -Value $icerik.TrimEnd() -Encoding UTF8
+
+        # Kullanıcı listeleri korunur; yalnız uzak kaynak geçici dosya ile değiştirilir.
+        $kaynaklar = @(Get-ListeDosyalari $Script:KurulumDizini | Where-Object { $_ -ne $hedef })
+        $kaynaklar += $taslakKaynak
+        $ayar = Read-Ayarlar
+        $ekler = @()
+        if ($ayar -and $ayar.hedefler) { $ekler = @($ayar.hedefler) }
+        Write-Liste $kaynaklar $ekler $taslakEtkin | Out-Null
+
+        Copy-Item -Path $hedef -Destination $yedekKaynak -Force
+        if ($etkinVardi) { Copy-Item -Path $etkin -Destination $yedekEtkin -Force }
+        $hizmet = Get-Hizmet $Script:HizmetAdi
+        $calisiyordu = [bool]($hizmet -and $hizmet.Status -eq 'Running')
+        try {
+            Copy-Item -Path $taslakKaynak -Destination $hedef -Force
+            Copy-Item -Path $taslakEtkin -Destination $etkin -Force
+            if ($calisiyordu) {
+                Stop-Hizmet $Script:HizmetAdi
+                Start-Service $Script:HizmetAdi -ErrorAction Stop
+            }
+        } catch {
+            $sebep = $_.Exception.Message
+            try {
+                Copy-Item -Path $yedekKaynak -Destination $hedef -Force
+                if ($etkinVardi) {
+                    Copy-Item -Path $yedekEtkin -Destination $etkin -Force
+                } elseif (Test-Path $etkin) {
+                    Remove-Item $etkin -Force
+                }
+                if ($calisiyordu) {
+                    Stop-Hizmet $Script:HizmetAdi
+                    Start-Service $Script:HizmetAdi -ErrorAction Stop
+                }
+            } catch {
+                throw "Liste güncellemesi başarısız; geri yükleme de başarısız: $($_.Exception.Message)"
+            }
+            throw "Yeni liste uygulanamadı; önceki liste geri yüklendi. Neden: $sebep"
+        }
+        return $true
+    } finally {
+        foreach ($dosya in @($taslakKaynak, $taslakEtkin, $yedekKaynak, $yedekEtkin)) {
+            Remove-Item -Path $dosya -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Invoke-ListeGuncelle {
@@ -1007,10 +1057,17 @@ function Invoke-Bekci {
         }
     }
 
-    # 5) Günde bir liste güncellemesi.
-    if (Test-SureGecti $durum.sonListe (New-TimeSpan -Days 1)) {
-        try { if (Update-Liste) { Yaz 'Alan adı listesi güncellendi.' } } catch { Yaz "Liste güncellenemedi: $($_.Exception.Message)" }
-        $durum.sonListe = (Get-Date).ToString('s')
+    # 5) Başarılı güncellemeden sonra günde bir dene. Hata olursa bir saat sonra yeniden
+    # dene; başarısız isteği son başarılı güncelleme olarak kaydetme.
+    if ((Test-SureGecti $durum.sonListe (New-TimeSpan -Days 1)) -and
+        (Test-SureGecti $durum.sonListeDeneme (New-TimeSpan -Hours 1))) {
+        $durum.sonListeDeneme = (Get-Date).ToString('s')
+        try {
+            if (Update-Liste) { Yaz 'Alan adı listesi güncellendi.' }
+            $durum.sonListe = (Get-Date).ToString('s')
+        } catch {
+            Yaz "Liste güncellenemedi; bir saat sonra yeniden denenecek: $($_.Exception.Message)"
+        }
     }
     & $kaydet
 }

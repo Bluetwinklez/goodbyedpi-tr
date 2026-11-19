@@ -83,6 +83,7 @@ Describe 'Read-BekciDurumu' {
         $d = Read-BekciDurumu
         $d.ardisikHata | Should Be 1
         ($d.PSObject.Properties.Name -contains 'durdurmaNedeni') | Should Be $true
+        ($d.PSObject.Properties.Name -contains 'sonListeDeneme') | Should Be $true
         { $d.durdurmaNedeni = 'dns' } | Should Not Throw
     }
 }

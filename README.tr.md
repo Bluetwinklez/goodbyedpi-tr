@@ -84,3 +84,7 @@ Bu depodaki betikler MIT lisanslıdır. GoodbyeDPI Apache-2.0, WinDivert LGPL-3.
 `bul` ve `kur`, başka `goodbyedpi.exe` süreçlerini veya eski `GoodbyeDPI` hizmetini **izinsiz durdurmaz ya da kaldırmaz**. Çakışma varsa açıklayıcı bir uyarı verir; önce ilgili uygulamayı kendiniz kapatın. Eski hizmeti bilinçli olarak kaldırmak için `kaldir -Eski` kullanılabilir. Bu seçenek bile farklı uygulamaların bağımsız süreçlerine dokunmaz.
 
 `kaldir`, bu uygulamanın hizmetini ve kurulum dosyalarını siler; sistemde ortak kullanılan `WinDivert` sürücülerini otomatik kaldırmaz. Ağ sürücülerinin elle kaldırılması yalnızca hangi programın kullandığından emin olunduğunda yapılmalıdır.
+
+## Hata durumunda geri alınabilen liste güncellemesi
+
+`liste-guncelle` önce indirilen alan adlarını doğrular, geçici dosyada yeni birleşik listeyi oluşturur ve etkin listelerin yedeğini alır. Hizmet yeni listeyle yeniden başlatılamazsa hem Türkiye listesini hem etkin listeyi eski haline getirip hizmeti eski ayarlarla yeniden başlatmayı dener. Kullanıcının eklediği alan adları korunur. Bekçi başarısız güncellemeyi başarılı saymaz; 1 saat arayla yeniden dener. Gerçek servis/sürücü davranışı yeni sürüm yayınlanmadan önce Windows ortamında kontrol edilmelidir.

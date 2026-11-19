@@ -41,3 +41,7 @@ The current GitHub integration rejected repository metadata edits with HTTP 403.
 ## 19 November 2026 — Shared service and driver safety
 
 A source review found that the profile probe stopped foreign GoodbyeDPI processes/services, installation removed the legacy service without an explicit opt-in, and uninstall could delete shared WinDivert services based only on a short process-name allowlist. These actions risk disrupting unrelated networking tools. The hardening branch now fails safely when another instance conflicts, requires an explicit legacy-service removal choice, and never uninstalls shared WinDivert drivers automatically. Added Pester regression tests for no foreign-process termination during probe and no legacy-service removal during installation. Hardware/driver behavior still requires an administrator-led Windows test.
+
+## 19 November 2026 — Safer list updates and watchdog retry
+
+The domain-list updater previously overwrote live source/merged files directly and restarted the service without a rollback path. A failed restart could leave live files inconsistent. The revised implementation validates and stages both files, keeps separate temporary backups, and attempts to restore both and restart the former service on apply errors. The watchdog now records successful updates only, with one-hour retry throttling after failure. Added mocked Pester regression tests for rejecting malformed input, rollback on restart failure, cleanup and updates while the service is stopped. Windows live-driver tests remain outstanding.

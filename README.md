@@ -48,3 +48,7 @@ The wrapper is MIT licensed. Upstream GoodbyeDPI and WinDivert have their own li
 Run `./gdpi-tr.ps1 rapor` (no administrator privileges required) or choose menu option 8. A local `GoodbyeDPI-TR-rapor-*.json` file is written to the current user's temporary directory.
 
 The read-only report contains the application version, service/watchdog status, selected profile, DNS provider name and active domain count. It **never includes raw logs, usernames, full filesystem paths, IP addresses or target domains**. No telemetry is uploaded, no connectivity checks are performed and no services are modified. Always review the JSON before sharing.
+
+## Safer domain-list updates
+
+The `liste-guncelle` command first validates the downloaded source, generates the merged list in a temporary file, and backs up both active files before applying them. If a running GoodbyeDPI-TR service fails to restart, both files are restored and an error is shown. The watchdog treats only successful updates as completed; on failure it retries after one hour instead of waiting a full day. Existing user domain lists are preserved. Manual validation on a Windows VM is still recommended before deploying a new release.

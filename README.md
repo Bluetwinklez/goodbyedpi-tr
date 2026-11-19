@@ -25,7 +25,7 @@ By default, processing is limited to listed domains. Add custom domains one per 
 
 The installer downloads upstream binaries and verifies their hashes. A scheduled watchdog checks connectivity, attempts supported recovery and stops the service if it disrupts general access. Configuration and logs are under `C:\Program Files\GoodbyeDPI-TR\veri`. The installation directory is restricted to administrators.
 
-Use `kaldir` to uninstall; deleting the original download folder does not remove the running service. Inspect local logs before sharing them because they can describe your network and visited test destinations.
+Use `kaldir` to uninstall; deleting the original download folder does not remove the running service. The installer and profile probe **refuse to stop or delete other GoodbyeDPI installations automatically**: if another instance is detected, stop or uninstall it yourself first. Uninstall removes this app's service and files but leaves shared WinDivert drivers intact so other networking tools are not disrupted. Inspect local logs before sharing them because they can describe your network and visited test destinations.
 
 ## Requirements and limitations
 

@@ -37,6 +37,7 @@ Komut satırından (yönetici PowerShell):
 .\gdpi-tr.ps1 devam                 # hizmeti yeniden etkinleştir
 .\gdpi-tr.ps1 liste-guncelle        # engelli alan adı listesini güncelle
 .\gdpi-tr.ps1 doktor                # sorun tarama
+.\gdpi-tr.ps1 rapor                 # gizlilik korumalı yerel JSON raporu
 .\gdpi-tr.ps1 kaldir                # tamamen kaldır
 .\gdpi-tr.ps1 kaldir -Eski          # eski GoodbyeDPI-Turkey hizmetini de kaldır
 .\gdpi-tr.ps1 bul -Hedef ornek.com  # farklı bir siteye göre ayar bul
@@ -89,3 +90,25 @@ GitHub Actions her gönderimde Pester ve PSScriptAnalyzer çalıştırır. `v*` 
 ## Lisans
 
 Bu depodaki betikler MIT lisanslıdır. GoodbyeDPI Apache-2.0, WinDivert LGPL-3.0/GPL-2.0 lisanslıdır; ikisi de kurulum sırasında resmi kaynaktan indirilir.
+
+## Diğer GoodbyeDPI kurulumlarıyla çakışma
+
+`bul` ve `kur`, başka `goodbyedpi.exe` süreçlerini veya eski `GoodbyeDPI` hizmetini **izinsiz durdurmaz ya da kaldırmaz**. Çakışma varsa açıklayıcı bir uyarı verir; önce ilgili uygulamayı kendiniz kapatın. Eski hizmeti bilinçli olarak kaldırmak için `kaldir -Eski` kullanılabilir. Bu seçenek bile farklı uygulamaların bağımsız süreçlerine dokunmaz.
+
+`kaldir`, bu uygulamanın hizmetini ve kurulum dosyalarını siler; sistemde ortak kullanılan `WinDivert` sürücülerini otomatik kaldırmaz. Ağ sürücülerinin elle kaldırılması yalnızca hangi programın kullandığından emin olunduğunda yapılmalıdır.
+
+## Gizlilik korumalı teşhis raporu
+
+Menüden **10) Gizlilik korumalı teşhis raporu oluştur** seçeneğini veya PowerShell'den `./gdpi-tr.ps1 rapor` komutunu kullanın. Komut satırında yönetici izni gerekmez. Kullanıcının geçici klasöründe `GoodbyeDPI-TR-rapor-*.json` dosyası oluşur.
+
+Rapor sürüm, servis/bekçi durumu, profil adı, DNS sağlayıcı adı ve etkin alan adı sayısını içerir. **IP adresi, kullanıcı adı, tam dosya yolu, hedef alan adı, ham günlük veya hesap bilgisi içermez.** Herhangi bir sunucuya bilgi göndermez, bağlantı testi yapmaz ve servisleri değiştirmez. Paylaşmadan önce içeriği yine de inceleyin.
+
+## Hata durumunda geri alınabilen liste güncellemesi
+
+`liste-guncelle` önce indirilen alan adlarını doğrular, geçici dosyada yeni birleşik listeyi oluşturur ve etkin listelerin yedeğini alır. Hizmet yeni listeyle yeniden başlatılamazsa hem Türkiye listesini hem etkin listeyi eski haline getirip hizmeti eski ayarlarla yeniden başlatmayı dener. Kullanıcının eklediği alan adları korunur. Bekçi başarısız güncellemeyi başarılı saymaz; 1 saat arayla yeniden dener. Gerçek servis/sürücü davranışı yeni sürüm yayınlanmadan önce Windows ortamında kontrol edilmelidir.
+
+## Yayın ZIP dosyasının doğrulanması
+
+Yeni sürümler Türkçe kullanım kılavuzunu (`README.tr.md`), güvenlik politikasını ve bir SHA-256 doğrulama dosyasını (`.zip.sha256`) içerir. ZIP dosyasını indirdikten sonra PowerShell'de `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip` çalıştırıp sonucu aynı sürümdeki `.zip.sha256` dosyasındaki değerle karşılaştırın.
+
+Bu yöntem indirdiğiniz dosyanın beklenen sürüm dosyasıyla aynı olduğunu doğrular; projenin kaynağına veya dağıtım hesabına duyulan güvenin yerini tutmaz.

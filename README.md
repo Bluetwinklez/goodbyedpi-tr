@@ -34,7 +34,7 @@ Use menu option **8** to pause and **9** to resume. Windows keeps the service di
 
 JSON state writes preserve the previous valid object in a sibling `.bak` file. If the current file is damaged, reads use that backup and display a warning. Review the recovered settings before applying a profile. Keep backups with the same access restrictions as the original files.
 
-Use `kaldir` to uninstall; deleting the original download folder does not remove the running service. Inspect local logs before sharing them because they can describe your network and visited test destinations.
+Use `kaldir` to uninstall; deleting the original download folder does not remove the running service. The installer and profile probe **refuse to stop or delete other GoodbyeDPI installations automatically**: if another instance is detected, stop or uninstall it yourself first. Uninstall removes this app's service and files but leaves shared WinDivert drivers intact so other networking tools are not disrupted. Inspect local logs before sharing them because they can describe your network and visited test destinations.
 
 Uninstall preserves shared WinDivert registrations and retains the installed `bin` folder while a WinDivert driver is registered. It also leaves the older ProgramData data directory in place. If Windows is still deleting the service, close the Services console or reboot, then run uninstall again.
 
@@ -53,3 +53,19 @@ Windows CI runs Pester 4.10.1 and PSScriptAnalyzer. See the workflow for the exa
 The wrapper is MIT licensed. Upstream GoodbyeDPI and WinDivert have their own licenses.
 
 [Security policy](SECURITY.md) · [Repository security audit](SECURITY_AUDIT.md)
+
+## Privacy-safe diagnostics
+
+Run `./gdpi-tr.ps1 rapor` (no administrator privileges required) or choose menu option 10. A local `GoodbyeDPI-TR-rapor-*.json` file is written to the current user's temporary directory.
+
+The read-only report contains the application version, service/watchdog status, selected profile, DNS provider name and active domain count. It **never includes raw logs, usernames, full filesystem paths, IP addresses or target domains**. No telemetry is uploaded, no connectivity checks are performed and no services are modified. Always review the JSON before sharing.
+
+## Safer domain-list updates
+
+The `liste-guncelle` command first validates the downloaded source, generates the merged list in a temporary file, and backs up both active files before applying them. If a running GoodbyeDPI-TR service fails to restart, both files are restored and an error is shown. The watchdog treats only successful updates as completed; on failure it retries after one hour instead of waiting a full day. Existing user domain lists are preserved. Manual validation on a Windows VM is still recommended before deploying a new release.
+
+## Release archive integrity
+
+Releases include the Turkish README, English README and security policy alongside the launcher and domain lists. Each versioned ZIP has a companion `.zip.sha256` manifest containing its SHA-256 digest.
+
+Verify a downloaded release with PowerShell: `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip`. Compare the output to the corresponding `.zip.sha256` asset. Download and verify only official project releases.

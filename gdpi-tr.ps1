@@ -1,4 +1,4 @@
-﻿<#
+<#
   GoodbyeDPI-TR — Türkiye için GoodbyeDPI kurulum ve yönetim aracı.
 
   Orijinal GoodbyeDPI-Turkey fork'unun sorunlarını giderir:
@@ -19,6 +19,7 @@
     .\gdpi-tr.ps1 duraklat        hizmeti durdur; yeniden açılışta başlatma
     .\gdpi-tr.ps1 devam           duraklatılan hizmeti tekrar etkinleştir
     .\gdpi-tr.ps1 doktor          çakışan yazılım ve sorun taraması
+    .\gdpi-tr.ps1 rapor           özel bilgileri içermeyen yerel teşhis JSON'u üret
     .\gdpi-tr.ps1 test            hedef siteleri test et
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
@@ -26,7 +27,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'duraklat', 'devam', 'doktor', 'test', 'liste-guncelle', 'bekci')]
+    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'duraklat', 'devam', 'doktor', 'test', 'liste-guncelle', 'bekci', 'rapor')]
     [string]$Komut = 'menu',
     [switch]$Eski,
     [switch]$Genel,
@@ -712,6 +713,8 @@ function Get-HizmetDnsAyari($Dns) {
     }
     return $sonuc
 }
+# WinDivert paylaşılan bir sistem sürücüsüdür; sahibini doğrulamadan silinmez.
+# GoodbyeDPI-TR kaldırması yalnız kendi hizmetini ve dosyalarını temizler.
 
 function Get-HizmetKomutu($Ayar) {
     $profil = $null
@@ -783,7 +786,7 @@ function Read-BekciDurumu {
     $d = Read-Json $Script:BekciDosyasi
     if (-not $d) { $d = [pscustomobject]@{} }
     # Eski sürümün dosyasında olmayan alanlar da eklenir (PSCustomObject'e olmayan alan atanamaz).
-    foreach ($alan in 'ardisikHata', 'sonYenidenBul', 'durduruldu', 'durdurmaNedeni', 'sonListe') {
+    foreach ($alan in 'ardisikHata', 'sonYenidenBul', 'durduruldu', 'durdurmaNedeni', 'sonListe', 'sonListeDeneme') {
         if (-not ($d.PSObject.Properties.Name -contains $alan)) {
             $d | Add-Member -NotePropertyName $alan -NotePropertyValue $(if ($alan -eq 'ardisikHata') { 0 } else { $null })
         }
@@ -1357,6 +1360,63 @@ function Invoke-Durum {
     }
 }
 
+# Yerel ve gizlilik korumalı teşhis: ağ istekleri, servis değişikliği veya log dökümü yok.
+# Rapor; IP, DNS sunucu adresi, hedef alan adları, kullanıcı adı ve mutlak yol içermez.
+function Get-TaniRapor {
+    $ayar = $null
+    $ayarGecerli = $true
+    try { $ayar = Read-Ayarlar } catch { $ayarGecerli = $false }
+
+    $hizmet = Get-Hizmet $Script:HizmetAdi
+    $gorev = Get-ScheduledTask -TaskName $Script:GorevAdi -ErrorAction SilentlyContinue
+    $listeYolu = Join-Path $Script:KurulumDizini 'liste.txt'
+    $listeSayisi = $null
+    if (Test-Path $listeYolu) {
+        $listeSayisi = @(Get-Content $listeYolu -Encoding ASCII | Where-Object { $_.Trim() }).Count
+    }
+    $gunlukVar = Test-Path $Script:GunlukDosyasi
+
+    $hizmetDurumu = 'NotInstalled'
+    if ($hizmet) { $hizmetDurumu = [string]$hizmet.Status }
+    $gorevDurumu = 'NotInstalled'
+    if ($gorev) { $gorevDurumu = [string]$gorev.State }
+
+    $profil = $null
+    $dnsSaglayici = $null
+    $kapsam = $null
+    if ($ayar) {
+        $profil = [string]$ayar.profil
+        if ($ayar.dns) { $dnsSaglayici = [string]$ayar.dns.Ad }
+        $kapsam = if ($ayar.genel) { 'all-traffic' } else { 'domain-list' }
+    }
+
+    return [pscustomobject][ordered]@{
+        reportSchemaVersion = 1
+        generatedUtc = (Get-Date).ToUniversalTime().ToString('o')
+        applicationVersion = $Script:Surum
+        architecture = Get-Mimari
+        installationPresent = (Test-Path $Script:KurulumDizini)
+        serviceStatus = $hizmetDurumu
+        watchdogStatus = $gorevDurumu
+        configurationReadable = [bool]$ayarGecerli
+        configurationPresent = [bool]$ayar
+        selectedProfile = $profil
+        scope = $kapsam
+        dnsProviderName = $dnsSaglayici
+        activeDomainCount = $listeSayisi
+        watchdogLogPresent = [bool]$gunlukVar
+    }
+}
+
+function Invoke-Rapor {
+    # Kullanıcının geçici klasörüne yazar; SYSTEM veya yönetici yetkisi gerektirmez.
+    $ad = 'GoodbyeDPI-TR-rapor-{0}-{1}.json' -f (Get-Date -Format 'yyyyMMdd-HHmmss'), ([guid]::NewGuid().ToString('N').Substring(0, 8))
+    $hedef = Join-Path ([IO.Path]::GetTempPath()) $ad
+    Get-TaniRapor | ConvertTo-Json -Depth 4 | Set-Content -Path $hedef -Encoding UTF8
+    Basari "Teşhis raporu oluşturuldu: $hedef"
+    Uyari 'Raporun içinde IP adresleri, hedef siteler veya ham günlükler bulunmaz.'
+}
+
 function Invoke-Doktor {
     Baslik 'Doktor'
     if (Test-Yonetici) { Basari 'Yönetici yetkisi var' } else { Hata 'Yönetici yetkisi yok' }
@@ -1400,7 +1460,8 @@ function Invoke-Doktor {
 }
 
 function Update-Liste {
-    # GitHub'daki güncel listeyi indirir; her satırı doğrular. Değiştiyse $true.
+    # Önce kaynağı ve birleşik listeyi ayrı dosyalarda doğrula. Bir hata varsa etkin
+    # listeye dokunma; hizmet başlangıcı başarısızsa eski dosyaları geri yükle.
     $hedef = Join-Path $Script:KurulumDizini 'listeler\turkiye.txt'
     if (-not (Test-Path (Split-Path $hedef))) { throw 'GoodbyeDPI-TR kurulu değil.' }
     $oncekiTls = [Net.ServicePointManager]::SecurityProtocol
@@ -1412,7 +1473,7 @@ function Update-Liste {
     }
     $alanlar = @($icerik -split "`r?`n" | ForEach-Object { ($_ -replace '#.*$', '').Trim().ToLowerInvariant() } | Where-Object { $_ })
     $gecersiz = @($alanlar | Where-Object { -not (Test-AlanAdi $_) })
-    if ($gecersiz -or $alanlar.Count -lt 3 -or $alanlar.Count -gt 5000) {
+    if ($gecersiz.Count -gt 0 -or $alanlar.Count -lt 3 -or $alanlar.Count -gt 5000) {
         throw "İndirilen liste geçersiz ($($alanlar.Count) satır, $($gecersiz.Count) hatalı); güncellenmedi."
     }
     $eski = ''
@@ -1599,10 +1660,17 @@ function Invoke-Bekci {
         }
     }
 
-    # 5) Günde bir liste güncellemesi.
-    if (Test-SureGecti $durum.sonListe (New-TimeSpan -Days 1)) {
-        try { if (Update-Liste) { Yaz 'Alan adı listesi güncellendi.' } } catch { Yaz "Liste güncellenemedi: $($_.Exception.Message)" }
-        $durum.sonListe = (Get-Date).ToString('s')
+    # 5) Başarılı güncellemeden sonra günde bir dene. Hata olursa bir saat sonra yeniden
+    # dene; başarısız isteği son başarılı güncelleme olarak kaydetme.
+    if ((Test-SureGecti $durum.sonListe (New-TimeSpan -Days 1)) -and
+        (Test-SureGecti $durum.sonListeDeneme (New-TimeSpan -Hours 1))) {
+        $durum.sonListeDeneme = (Get-Date).ToString('s')
+        try {
+            if (Update-Liste) { Yaz 'Alan adı listesi güncellendi.' }
+            $durum.sonListe = (Get-Date).ToString('s')
+        } catch {
+            Yaz "Liste güncellenemedi; bir saat sonra yeniden denenecek: $($_.Exception.Message)"
+        }
     }
     & $kaydet
 }
@@ -1638,6 +1706,7 @@ function Show-Menu {
         Yaz '  7) Eski GoodbyeDPI hizmetini de kaldır'
         Yaz '  8) Duraklat'
         Yaz '  9) Devam et'
+        Yaz '  10) Gizlilik korumalı teşhis raporu oluştur'
         Yaz '  0) Çıkış'
         $s = Read-Host 'Seçim'
         try {
@@ -1651,6 +1720,7 @@ function Show-Menu {
                 '7' { Invoke-KilitliIslem { Invoke-Kaldir -Eski } }
                 '8' { Invoke-KilitliIslem { Invoke-Duraklat } }
                 '9' { Invoke-KilitliIslem { Invoke-Devam } }
+                '10' { Invoke-Rapor }
                 '0' { return }
             }
         } catch {
@@ -1676,7 +1746,7 @@ function Main {
         return
     }
 
-    if ($Komut -ne 'test' -and -not (Test-Yonetici)) {
+    if ($Komut -notin @('test', 'rapor') -and -not (Test-Yonetici)) {
         Hata 'Bu araç yönetici olarak çalıştırılmalı (GoodbyeDPI-TR.cmd dosyasını kullanın).'
         exit 1
     }
@@ -1691,6 +1761,7 @@ function Main {
             'duraklat' { Invoke-KilitliIslem { Invoke-Duraklat } }
             'devam' { Invoke-KilitliIslem { Invoke-Devam } }
             'doktor' { Invoke-Doktor }
+            'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
             'liste-guncelle' { Invoke-KilitliIslem { Invoke-ListeGuncelle } }
             'bekci'  { Invoke-KilitliIslem { Invoke-Bekci } -Bekci }

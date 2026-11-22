@@ -1,4 +1,4 @@
-﻿# Pester 3.4 (Windows ile gelir):  Invoke-Pester .\tests
+# Pester 3.4 (Windows ile gelir):  Invoke-Pester .\tests
 . (Join-Path $PSScriptRoot '..\gdpi-tr.ps1')
 
 Describe 'Get-DurumOzeti' {
@@ -349,6 +349,7 @@ Describe 'Read-BekciDurumu' {
         $d = Read-BekciDurumu
         $d.ardisikHata | Should Be 1
         ($d.PSObject.Properties.Name -contains 'durdurmaNedeni') | Should Be $true
+        ($d.PSObject.Properties.Name -contains 'sonListeDeneme') | Should Be $true
         { $d.durdurmaNedeni = 'dns' } | Should Not Throw
     }
 }
@@ -629,5 +630,139 @@ Describe 'Invoke-KilitliIslem' {
         } finally {
             $Script:KurulumDizini = $eskiDizin
         }
+    }
+}
+
+Describe 'Yabancı GoodbyeDPI işlemlerinin korunması' {
+    It 'ölçümde çalışan eski hizmeti kendiliğinden durdurmaz' {
+        Mock Get-Hizmet {
+            if ($Ad -eq 'GoodbyeDPI') { return [pscustomobject]@{ Status = 'Running' } }
+            return $null
+        }
+        Mock Get-YabanciGdpiSurecleri { @() }
+        Mock Stop-Hizmet { }
+        { Invoke-Bul -Hedefler @('discord.com') } | Should Throw
+        Assert-MockCalled Stop-Hizmet -Times 0
+    }
+
+    It 'ölçümde başka goodbyedpi.exe süreçlerine dokunmaz' {
+        Mock Get-Hizmet { return $null }
+        Mock Get-YabanciGdpiSurecleri { return @([pscustomobject]@{ Id = 4242 }) }
+        Mock Stop-Process { }
+        { Invoke-Bul -Hedefler @('discord.com') } | Should Throw
+        Assert-MockCalled Stop-Process -Times 0
+    }
+
+    It 'kurulumda eski hizmeti izinsiz kaldırmaz' {
+        Mock Read-Ayarlar { return [pscustomobject]@{ profil = 'modern-9'; arg = '-9' } }
+        Mock Get-Hizmet {
+            if ($Ad -eq 'GoodbyeDPI') { return [pscustomobject]@{ Status = 'Stopped' } }
+            return $null
+        }
+        Mock Remove-Hizmet { }
+        { Invoke-Kur } | Should Throw
+        Assert-MockCalled Remove-Hizmet -Times 0
+    }
+}
+
+
+Describe 'Gizlilik korumalı rapor' {
+    It 'yalnız yerel bilgileri toplar, özel ağ adresleri ve hedefleri sızdırmaz' {
+        $once = $Script:KurulumDizini
+        try {
+            $Script:KurulumDizini = $TestDrive
+            Set-Content (Join-Path $TestDrive 'liste.txt') -Value @('discord.com', 'roblox.com') -Encoding ASCII
+            Mock Get-Hizmet { [pscustomobject]@{ Status = 'Running' } }
+            Mock Get-ScheduledTask { [pscustomobject]@{ State = 'Ready' } }
+            Mock Get-Mimari { 'x86_64' }
+            Mock Read-Ayarlar {
+                [pscustomobject]@{
+                    profil = 'modern-9'
+                    genel = $false
+                    dns = [pscustomobject]@{ Ad = 'Quad9'; V4 = '9.9.9.10' }
+                    hedefler = @('secret.example.com')
+                    iss = 'Private ISP account'
+                }
+            }
+            Mock Test-Https { throw 'Ağ isteği yapılmamalı' }
+            Mock Start-Service { throw 'Servis değiştirilmemeli' }
+            $r = Get-TaniRapor
+            $json = $r | ConvertTo-Json -Depth 4
+            $r.serviceStatus | Should Be 'Running'
+            $r.watchdogStatus | Should Be 'Ready'
+            $r.activeDomainCount | Should Be 2
+            $r.selectedProfile | Should Be 'modern-9'
+            $r.configurationReadable | Should Be $true
+            $json | Should Not Match '9\.9\.9\.10|secret\.example\.com|Private ISP|discord\.com|roblox\.com'
+            Assert-MockCalled Test-Https -Times 0
+            Assert-MockCalled Start-Service -Times 0
+        } finally { $Script:KurulumDizini = $once }
+    }
+    It 'bozuk ayarlarda da yalnız hata durumu raporlar' {
+        Mock Read-Ayarlar { throw 'C:\Users\secret-user\broken.json' }
+        Mock Get-Hizmet { return $null }
+        Mock Get-ScheduledTask { return $null }
+        Mock Get-Mimari { 'x86_64' }
+        $r = Get-TaniRapor
+        $r.configurationReadable | Should Be $false
+        $r.configurationPresent | Should Be $false
+        ($r | ConvertTo-Json) | Should Not Match 'secret-user|broken\.json'
+    }
+}
+
+Describe 'Güvenli alan adı listesi güncellemesi' {
+    BeforeEach {
+        $Script:EskiKurulum = $Script:KurulumDizini
+        $Script:EskiVeri = $Script:VeriDizini
+        $Script:KurulumDizini = Join-Path $TestDrive 'installed'
+        $Script:VeriDizini = Join-Path $TestDrive 'data'
+        $Script:KaynakListe = Join-Path $Script:KurulumDizini 'listeler\turkiye.txt'
+        $Script:EtkinListe = Join-Path $Script:KurulumDizini 'liste.txt'
+        New-Item -ItemType Directory -Force -Path (Split-Path $Script:KaynakListe) | Out-Null
+        Set-Content -Path $Script:KaynakListe -Value @('discord.com', 'roblox.com', 'old.example') -Encoding UTF8
+        Set-Content -Path $Script:EtkinListe -Value @('discord.com', 'roblox.com', 'old.example') -Encoding ASCII
+        Mock Read-Ayarlar { $null }
+        Mock Invoke-WebRequest {
+            [pscustomobject]@{ Content = [string]::Join([Environment]::NewLine, @('discord.com', 'roblox.com', 'new.example')) }
+        }
+    }
+    AfterEach {
+        $Script:KurulumDizini = $Script:EskiKurulum
+        $Script:VeriDizini = $Script:EskiVeri
+    }
+    It 'geçersiz uzak listeyi mevcut dosyalara dokunmadan reddeder' {
+        Mock Invoke-WebRequest { [pscustomobject]@{ Content = 'evil --set-ttl 1' } }
+        Mock Stop-Hizmet { throw 'Hizmete dokunulmamalı' }
+        { Update-Liste } | Should Throw
+        (Get-Content $Script:KaynakListe -Raw -Encoding UTF8) | Should Match 'old.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'old.example'
+        Assert-MockCalled Stop-Hizmet -Times 0
+    }
+    It 'servis başlatılamazsa iki listeyi de geri yükler ve geçici dosyaları temizler' {
+        $script:UpdateListHizmet = @{ Status = 'Running' }
+        Mock Get-Hizmet { $script:UpdateListHizmet }
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ StartMode = 'Auto' } }
+        Mock Stop-Hizmet { $script:UpdateListHizmet.Status = 'Stopped' }
+        Mock Wait-HizmetDurumu { $true }
+        $script:UpdateListStarts = 0
+        Mock Start-Service {
+            $script:UpdateListStarts++
+            if ($script:UpdateListStarts -eq 1) { throw 'Simulated startup failure' }
+            $script:UpdateListHizmet.Status = 'Running'
+        }
+        { Update-Liste } | Should Throw
+        (Get-Content $Script:KaynakListe -Raw -Encoding UTF8) | Should Match 'old.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'old.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Not Match 'new.example'
+        @(Get-ChildItem $Script:VeriDizini -File -ErrorAction SilentlyContinue).Count | Should Be 0
+        Assert-MockCalled Start-Service -Times 2 -Scope It
+    }
+    It 'servis çalışmıyorken doğrulanmış listeleri günceller, servis başlatmaz' {
+        Mock Get-Hizmet { $null }
+        Mock Start-Service { throw 'Servis başlatılmamalı' }
+        (Update-Liste) | Should Be $true
+        (Get-Content $Script:KaynakListe -Raw -Encoding UTF8) | Should Match 'new.example'
+        (Get-Content $Script:EtkinListe -Raw -Encoding ASCII) | Should Match 'new.example'
+        Assert-MockCalled Start-Service -Times 0 -Scope It
     }
 }

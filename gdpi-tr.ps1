@@ -1,4 +1,4 @@
-﻿<#
+<#
   GoodbyeDPI-TR — Türkiye için GoodbyeDPI kurulum ve yönetim aracı.
 
   Orijinal GoodbyeDPI-Turkey fork'unun sorunlarını giderir:
@@ -16,6 +16,8 @@
     .\gdpi-tr.ps1 kur             bulunan ayarla hizmet olarak kur
     .\gdpi-tr.ps1 kaldir [-Eski]  tamamen kaldır (-Eski: eski GoodbyeDPI hizmetini de)
     .\gdpi-tr.ps1 durum           hizmet, bekçi ve erişim durumu
+    .\gdpi-tr.ps1 duraklat        hizmeti durdur; yeniden açılışta başlatma
+    .\gdpi-tr.ps1 devam           duraklatılan hizmeti tekrar etkinleştir
     .\gdpi-tr.ps1 doktor          çakışan yazılım ve sorun taraması
     .\gdpi-tr.ps1 rapor           özel bilgileri içermeyen yerel teşhis JSON'u üret
     .\gdpi-tr.ps1 test            hedef siteleri test et
@@ -25,11 +27,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'doktor', 'test', 'liste-guncelle', 'bekci', 'rapor')]
+    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'duraklat', 'devam', 'doktor', 'test', 'liste-guncelle', 'bekci', 'rapor')]
     [string]$Komut = 'menu',
     [switch]$Eski,
     [switch]$Genel,
-    [string[]]$Hedef
+    [string[]]$Hedef,
+    [switch]$Json
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +43,8 @@ $ProgressPreference = 'SilentlyContinue'   # PS 5.1'de ilerleme çubuğu indirme
 $Script:Surum = '1.1.1'
 $Script:HizmetAdi = 'GoodbyeDPI-TR'
 $Script:GorevAdi = 'GoodbyeDPI-TR Bekci'
+$Script:SistemDizini = [Environment]::SystemDirectory
+$Script:ScExe = Join-Path $Script:SistemDizini 'sc.exe'
 $Script:KurulumDizini = Join-Path $env:ProgramFiles 'GoodbyeDPI-TR'
 # Veriler Program Files altında: yalnızca yöneticiler yazabilir. ProgramData'da normal
 # kullanıcılar klasör oluşturabildiği için oradaki dosyalara güvenilemez.
@@ -158,22 +163,73 @@ function Get-Mimari {
 
 function Get-Curl {
     # Git'in değil Windows'un curl'ü: Schannel kullanır, sistem sertifikalarına güvenir.
-    $yol = Join-Path $env:SystemRoot 'System32\curl.exe'
+    $yol = Join-Path $Script:SistemDizini 'curl.exe'
     if (Test-Path $yol) { return $yol }
     return $null
 }
 
-function Read-Json([string]$Yol) {
-    if (Test-Path $Yol) { return Get-Content $Yol -Raw -Encoding UTF8 | ConvertFrom-Json }
-    return $null
+function ConvertFrom-JsonNesnesi([string]$Metin) {
+    $nesne = ConvertFrom-Json -InputObject $Metin -ErrorAction Stop
+    if ($null -eq $nesne -or $nesne.GetType() -ne [System.Management.Automation.PSCustomObject]) {
+        throw 'JSON dosyası bir ayar nesnesi içermeli.'
+    }
+    return $nesne
+}
+
+function Read-Json([string]$Yol, [System.Collections.Generic.List[string]]$Uyarilar) {
+    if (-not [IO.File]::Exists($Yol) -and -not [IO.File]::Exists("$Yol.bak")) { return $null }
+    if ([IO.File]::Exists($Yol)) {
+        $metin = [IO.File]::ReadAllText($Yol, [Text.Encoding]::UTF8)
+        try {
+            return ConvertFrom-JsonNesnesi $metin
+        } catch {
+            if (-not [IO.File]::Exists("$Yol.bak")) { throw "Ayar dosyası geçersiz: $Yol" }
+        }
+    }
+    $yedekMetin = [IO.File]::ReadAllText("$Yol.bak", [Text.Encoding]::UTF8)
+    try {
+        $yedek = ConvertFrom-JsonNesnesi $yedekMetin
+    } catch {
+        throw "Ayar dosyası ve yedeği kullanılamıyor: $Yol"
+    }
+    $mesaj = "Son geçerli ayar yedeği kullanılıyor: $Yol.bak"
+    if ($null -ne $Uyarilar) { $Uyarilar.Add($mesaj) } else { Uyari $mesaj }
+    return $yedek
 }
 
 function Save-Json($Nesne, [string]$Yol) {
-    New-Item -ItemType Directory -Force -Path (Split-Path $Yol) | Out-Null
-    $Nesne | ConvertTo-Json -Depth 5 | Set-Content -Path $Yol -Encoding UTF8
+    # Önce aynı diskte geçici dosyayı tamamla; yarım yazım mevcut ayarı bozmasın.
+    $json = $Nesne | ConvertTo-Json -Depth 5
+    ConvertFrom-JsonNesnesi $json | Out-Null
+    $tamYol = [IO.Path]::GetFullPath($Yol)
+    New-Item -ItemType Directory -Force -Path (Split-Path $tamYol) | Out-Null
+    $gecici = $tamYol + '.' + [Guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        [IO.File]::WriteAllText($gecici, $json, (New-Object Text.UTF8Encoding($false)))
+        if ([IO.File]::Exists($tamYol)) {
+            $gecerli = $false
+            $onceki = [IO.File]::ReadAllText($tamYol, [Text.Encoding]::UTF8)
+            try {
+                ConvertFrom-JsonNesnesi $onceki | Out-Null
+                $gecerli = $true
+            } catch { }
+            if ($gecerli) {
+                [IO.File]::Replace($gecici, $tamYol, "$tamYol.bak")
+            } else {
+                # Bozuk ana dosya son geçerli yedeğin üzerine yazılmasın.
+                [IO.File]::Replace($gecici, $tamYol, [NullString]::Value)
+            }
+        } else {
+            [IO.File]::Move($gecici, $tamYol)
+        }
+    } finally {
+        if ([IO.File]::Exists($gecici)) { [IO.File]::Delete($gecici) }
+    }
 }
 
-function Read-Ayarlar { return Read-Json $Script:AyarDosyasi }
+function Read-Ayarlar([System.Collections.Generic.List[string]]$Uyarilar) {
+    return Read-Json $Script:AyarDosyasi $Uyarilar
+}
 function Save-Ayarlar($Ayarlar) { Save-Json $Ayarlar $Script:AyarDosyasi }
 
 # --- Liste ----------------------------------------------------------------
@@ -198,6 +254,15 @@ function Get-ListeDosyalari([string]$Kok) {
     $dizin = Join-Path $Kok 'listeler'
     if (-not (Test-Path $dizin)) { return @() }
     return @(Get-ChildItem $dizin -Filter *.txt | Sort-Object Name | ForEach-Object FullName)
+}
+
+function Get-KurulumListeKopyalari([string]$Kaynak, [string]$Hedef) {
+    foreach ($dosya in Get-ListeDosyalari $Kaynak) {
+        $ad = [IO.Path]::GetFileName($dosya)
+        $hedefDosya = Join-Path $Hedef $ad
+        if ($ad -eq 'kullanici.txt' -and (Test-Path -LiteralPath $hedefDosya)) { continue }
+        [pscustomobject]@{ Kaynak = $dosya; Hedef = $hedefDosya }
+    }
 }
 
 function Write-Liste([string[]]$Kaynaklar, [string[]]$Ekler, [string]$Cikti) {
@@ -249,7 +314,7 @@ function Get-Iss {
     # İSS'in ASN'sini öğrenir (yalnızca profil sırası için). Ulaşılamazsa $null.
     $curl = Get-Curl
     if (-not $curl) { return $null }
-    $org = & $curl -s --connect-timeout 3 -m 5 https://ipinfo.io/org 2>$null
+    $org = & $curl --disable -s --connect-timeout 3 -m 5 https://ipinfo.io/org 2>$null
     if ($LASTEXITCODE -eq 0 -and $org -match '^AS(\d+)\s*(.*)$') { return @{ Asn = $Matches[1]; Ad = $Matches[2].Trim() } }
     return $null
 }
@@ -267,33 +332,54 @@ function New-DnsSorgusu([string]$Alan, [uint16]$Kimlik = 0x1234) {
     return , $b.ToArray()
 }
 
-function Read-DnsCevabi([byte[]]$Veri, [int]$Kimlik = -1) {
+function Read-DnsCevabi([byte[]]$Veri, [int]$Kimlik = -1, [byte[]]$Sorgu) {
     # A kayıtlarının IPv4 adreslerini döndürür. Kimlik verilirse eşleşmeyen cevap reddedilir.
     # [int] dönüşümleri şart: PowerShell'de byte -shl 8 sonucu byte olarak taşar.
     if ($Veri.Length -lt 12) { return @() }
     if ($Kimlik -ge 0 -and ((([int]$Veri[0] -shl 8) -bor $Veri[1]) -ne $Kimlik)) { return @() }
+    # QR=1, standart sorgu, kesilmemiş paket ve NOERROR.
+    if (($Veri[2] -band 0xFA) -ne 0x80 -or ($Veri[3] -band 0x0F) -ne 0) { return @() }
     $soru = ([int]$Veri[4] -shl 8) -bor $Veri[5]
     $cevap = ([int]$Veri[6] -shl 8) -bor $Veri[7]
+    if ($soru -ne 1) { return @() }
+    if ($Sorgu) {
+        if ($Sorgu.Length -lt 17 -or $Veri.Length -lt $Sorgu.Length) { return @() }
+        # Gönderdiğimiz soru tek ve sıkıştırmasızdır. DNS adında harf büyüklüğü önemsizdir.
+        $uzunluk = $Sorgu.Length - 12
+        $beklenen = [Text.Encoding]::ASCII.GetString($Sorgu, 12, $uzunluk)
+        $gelen = [Text.Encoding]::ASCII.GetString($Veri, 12, $uzunluk)
+        if (-not [string]::Equals($beklenen, $gelen, [StringComparison]::OrdinalIgnoreCase)) { return @() }
+    }
     $i = 12
     $atla = {
         param($p)
         while ($p -lt $Veri.Length) {
             $u = $Veri[$p]
             if ($u -eq 0) { return $p + 1 }
-            if (($u -band 0xC0) -eq 0xC0) { return $p + 2 }
+            if (($u -band 0xC0) -eq 0xC0) {
+                if ($p + 1 -ge $Veri.Length) { return -1 }
+                $isaret = (([int]$u -band 0x3F) -shl 8) -bor $Veri[$p + 1]
+                if ($isaret -lt 12 -or $isaret -ge $p) { return -1 }
+                return $p + 2
+            }
+            if ($u -gt 63) { return -1 }
             $p += $u + 1
         }
-        return $p
+        return -1
     }
-    for ($q = 0; $q -lt $soru; $q++) { $i = (& $atla $i) + 4 }
+    $i = & $atla $i
+    if ($i -lt 0 -or $i + 4 -gt $Veri.Length) { return @() }
+    $i += 4
     $ipler = @()
-    for ($a = 0; $a -lt $cevap -and $i -lt $Veri.Length; $a++) {
+    for ($a = 0; $a -lt $cevap; $a++) {
         $i = & $atla $i
-        if ($i + 10 -gt $Veri.Length) { break }
+        if ($i -lt 0 -or $i + 10 -gt $Veri.Length) { return @() }
         $tip = ([int]$Veri[$i] -shl 8) -bor $Veri[$i + 1]
+        $sinif = ([int]$Veri[$i + 2] -shl 8) -bor $Veri[$i + 3]
         $uzunluk = ([int]$Veri[$i + 8] -shl 8) -bor $Veri[$i + 9]
         $i += 10
-        if ($tip -eq 1 -and $uzunluk -eq 4 -and $i + 4 -le $Veri.Length) {
+        if ($i + $uzunluk -gt $Veri.Length) { return @() }
+        if ($tip -eq 1 -and $sinif -eq 1 -and $uzunluk -eq 4) {
             $ipler += '{0}.{1}.{2}.{3}' -f $Veri[$i], $Veri[$i + 1], $Veri[$i + 2], $Veri[$i + 3]
         }
         $i += $uzunluk
@@ -314,11 +400,20 @@ function Resolve-UdpDns([string]$Sunucu, [int]$Port, [string]$Alan, [int]$ZamanA
     $istemci = New-Object System.Net.Sockets.UdpClient($adres.AddressFamily)
     try {
         $istemci.Client.ReceiveTimeout = $ZamanAsimiMs
-        $kimlik = Get-Random -Minimum 1 -Maximum 65535
+        $rastgele = [Security.Cryptography.RandomNumberGenerator]::Create()
+        try {
+            $bayt = New-Object byte[] 2
+            $rastgele.GetBytes($bayt)
+            $kimlik = [BitConverter]::ToUInt16($bayt, 0)
+        } finally {
+            $rastgele.Dispose()
+        }
         $sorgu = New-DnsSorgusu $Alan ([uint16]$kimlik)
-        [void]$istemci.Send($sorgu, $sorgu.Length, (New-Object System.Net.IPEndPoint($adres, $Port)))
+        # Bağlı UDP soketi yalnızca seçilen IP ve porttan gelen paketleri kabul eder.
+        $istemci.Connect($adres, $Port)
+        [void]$istemci.Send($sorgu, $sorgu.Length)
         $uc = New-Object System.Net.IPEndPoint($adres, 0)
-        return Read-DnsCevabi ($istemci.Receive([ref]$uc)) $kimlik
+        return Read-DnsCevabi ($istemci.Receive([ref]$uc)) $kimlik $sorgu
     } catch {
         return @()
     } finally {
@@ -363,15 +458,64 @@ function Find-DnsSunucusu([string[]]$Hedefler) {
 
 # --- Bağlantı testi -------------------------------------------------------
 
-function Test-Https([string]$Alan, [string]$DohUrl, [int]$Sure = 8) {
+function Get-HttpsSonucu([string]$Alan, [string]$HttpKodu, [int]$CikisKodu) {
+    $http = 0
+    if ($HttpKodu -match '^[1-5]\d\d$') { $http = [int]$HttpKodu }
+    $erisim = $CikisKodu -eq 0 -and $http -ge 100
+    $durum = 'aktarim'
+    $aciklama = "Aktarım tamamlanamadı (curl kodu $CikisKodu)."
+    switch ($CikisKodu) {
+        0 {
+            if ($http -ge 500) {
+                $durum = 'sunucu'; $aciklama = "HTTPS yanıtı alındı; sunucu hatası var (HTTP $http)."
+            } elseif ($http -ge 400) {
+                $durum = 'http'; $aciklama = "HTTPS yanıtı alındı; istek reddedildi (HTTP $http)."
+            } elseif ($http -ge 100) {
+                $durum = 'erisim'; $aciklama = "HTTPS yanıtı alındı (HTTP $http)."
+            } else {
+                $durum = 'yanit'; $aciklama = 'Geçerli HTTP yanıtı alınamadı.'
+            }
+        }
+        5 { $durum = 'proxy-dns'; $aciklama = 'Proxy sunucusunun adı çözülemedi.' }
+        6 { $durum = 'dns'; $aciklama = 'Hedefin DNS adı çözülemedi.' }
+        7 { $durum = 'baglanti'; $aciklama = 'Sunucuya bağlantı kurulamadı.' }
+        28 { $durum = 'zaman-asimi'; $aciklama = 'İstek zaman aşımına uğradı.' }
+        35 { $durum = 'tls'; $aciklama = 'TLS bağlantısı kurulamadı.' }
+        60 { $durum = 'sertifika'; $aciklama = 'Sunucu sertifikası doğrulanamadı.' }
+    }
+    return [pscustomobject]@{
+        Alan = $Alan
+        Erisim = $erisim
+        HttpKodu = $http
+        CikisKodu = $CikisKodu
+        Durum = $durum
+        Aciklama = $aciklama
+    }
+}
+
+function Invoke-HttpsOlcum([string]$Alan, [string]$DohUrl, [int]$Sure = 8) {
     # Hedefe HTTPS bağlantısı kurulabiliyor mu? DohUrl verilirse DNS engeli devre dışı kalır,
     # yalnızca DPI ölçülür.
+    $ip = $null
+    $sunucu = $Alan
+    if ([Net.IPAddress]::TryParse($Alan, [ref]$ip)) {
+        $sunucu = $ip.ToString()
+        if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $sunucu = "[$sunucu]" }
+    } elseif (-not (Test-AlanAdi $Alan)) {
+        throw 'Test hedefi geçerli bir alan adı veya IP adresi olmalı.'
+    }
     $curl = Get-Curl
     if (-not $curl) { throw 'Windows curl.exe bulunamadı (Windows 10 1803+ gerekir).' }
-    $arg = @('-s', '-o', 'NUL', '-w', '%{http_code}', '--connect-timeout', '5', '-m', "$Sure", "https://$Alan/")
+    $arg = @('-s', '-o', 'NUL', '-w', '%{http_code}', '--connect-timeout', '5', '-m', "$Sure", "https://$sunucu/")
     if ($DohUrl) { $arg = @('--doh-url', $DohUrl) + $arg }
+    # --disable ilk argüman olmalı; kullanıcı curlrc ayarları ölçümü değiştirmesin.
+    $arg = @('--disable') + $arg
     $kod = & $curl @arg 2>$null
-    return ($LASTEXITCODE -eq 0 -and $kod -match '^[1-5]\d\d$')
+    return Get-HttpsSonucu $Alan ([string]$kod) $LASTEXITCODE
+}
+
+function Test-Https([string]$Alan, [string]$DohUrl, [int]$Sure = 8) {
+    return (Invoke-HttpsOlcum $Alan $DohUrl $Sure).Erisim
 }
 
 function Test-Internet {
@@ -460,6 +604,46 @@ function Get-Hizmet([string]$Ad) {
     return Get-Service -Name $Ad -ErrorAction SilentlyContinue
 }
 
+function Get-GdpiHizmetBilgisi {
+    return Get-CimInstance Win32_Service -Filter "Name='$Script:HizmetAdi'"
+}
+
+function Invoke-Duraklat {
+    if (-not (Get-Hizmet $Script:HizmetAdi)) { throw 'GoodbyeDPI-TR kurulu değil.' }
+    Set-Service -Name $Script:HizmetAdi -StartupType Disabled
+    Stop-Hizmet $Script:HizmetAdi
+    if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) {
+        throw 'Otomatik başlatma kapatıldı ancak hizmet durdurulamadı. Durumu denetleyin.'
+    }
+    Basari 'Hizmet duraklatıldı. Yeniden açmak için devam komutunu kullanın.'
+}
+
+function Invoke-Devam {
+    $hizmet = Get-GdpiHizmetBilgisi
+    if (-not $hizmet) { throw 'GoodbyeDPI-TR kurulu değil.' }
+    $duraklatilmis = $hizmet.StartMode -eq 'Disabled'
+    if ($duraklatilmis) { Set-Service -Name $Script:HizmetAdi -StartupType Automatic }
+    try {
+        if ($hizmet.State -ne 'Running') {
+            Start-Service $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet başlatılamadı.' }
+        }
+    } catch {
+        $baslatmaHatasi = $_
+        if ($duraklatilmis) {
+            try {
+                Set-Service -Name $Script:HizmetAdi -StartupType Disabled
+                Stop-Hizmet $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) { throw 'Hizmet durdurulamadı.' }
+            } catch {
+                throw "Başlatma başarısız: $($baslatmaHatasi.Exception.Message) Duraklatma geri yüklenemedi: $($_.Exception.Message)"
+            }
+        }
+        throw $baslatmaHatasi
+    }
+    Basari 'Hizmet çalışıyor.'
+}
+
 function Wait-HizmetDurumu([string]$Ad, [string]$Durum, [int]$Saniye = 15) {
     for ($i = 0; $i -lt $Saniye * 2; $i++) {
         $h = Get-Hizmet $Ad
@@ -473,20 +657,22 @@ function Wait-HizmetDurumu([string]$Ad, [string]$Durum, [int]$Saniye = 15) {
 function Stop-Hizmet([string]$Ad) {
     $h = Get-Hizmet $Ad
     if (-not $h -or $h.Status -eq 'Stopped') { return }
-    & sc.exe stop $Ad | Out-Null
+    & $Script:ScExe stop $Ad | Out-Null
+    $kod = $LASTEXITCODE
     if (-not (Wait-HizmetDurumu $Ad 'Stopped')) {
-        # Hizmet durmuyorsa süreci zorla kapat.
-        $pid_ = (Get-CimInstance Win32_Service -Filter "Name='$Ad'").ProcessId
-        if ($pid_) { Stop-Process -Id $pid_ -Force -ErrorAction SilentlyContinue }
-        Wait-HizmetDurumu $Ad 'Stopped' 5 | Out-Null
+        throw "$Ad hizmeti durdurulamadı (Windows kodu: $kod)."
     }
 }
 
 function Remove-Hizmet([string]$Ad) {
     if (-not (Get-Hizmet $Ad)) { return $false }
     Stop-Hizmet $Ad
-    & sc.exe delete $Ad | Out-Null
-    if (-not (Wait-HizmetDurumu $Ad 'Yok')) { Uyari "$Ad hizmeti silinmek üzere işaretlendi; yeniden başlatmadan sonra tamamen kalkacak." }
+    & $Script:ScExe delete $Ad | Out-Null
+    $kod = $LASTEXITCODE
+    if ($kod -notin 0, 1072) { throw "$Ad hizmeti silinemedi (Windows kodu: $kod)." }
+    if (-not (Wait-HizmetDurumu $Ad 'Yok')) {
+        throw "$Ad hizmetinin silinmesi bekleniyor. Hizmetler penceresini kapatıp tekrar deneyin veya Windows'u yeniden başlatın."
+    }
     return $true
 }
 
@@ -496,28 +682,102 @@ function Get-YabanciGdpiSurecleri {
     return @(Get-Process -Name goodbyedpi -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $bizim })
 }
 
-function Get-WinDivertKullanicilari {
-    # WinDivert'i kullanan diğer araçlar (sürücüyü bunlar açıkken kaldırmamak için).
-    $adlar = @('goodbyedpi', 'winws', 'zapret', 'SplitWire-Turkey')
-    return @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $adlar -contains $_.ProcessName })
+function Test-WinDivertKaydi {
+    return [bool](Get-CimInstance Win32_SystemDriver -Filter "Name LIKE 'WinDivert%'")
 }
 
+function Get-HizmetDnsAyari($Dns) {
+    if ($null -eq $Dns) { return }
+    $port = 0
+    if (($Dns.Port -isnot [int] -and $Dns.Port -isnot [long]) -or
+        -not [int]::TryParse([string]$Dns.Port, [ref]$port) -or $port -lt 1 -or $port -gt 65535) {
+        throw 'Hizmet ayarındaki DNS portu geçersiz.'
+    }
+    $v4 = $null
+    if ($Dns.V4 -isnot [string] -or -not [Net.IPAddress]::TryParse($Dns.V4, [ref]$v4) -or
+        $v4.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetwork) {
+        throw 'Hizmet ayarındaki IPv4 DNS adresi geçersiz.'
+    }
+    if ($null -ne $Dns.V6Etkin -and $Dns.V6Etkin -isnot [bool]) {
+        throw 'Hizmet ayarındaki IPv6 seçeneği geçersiz.'
+    }
+    $sonuc = @{ V4 = $v4.ToString(); Port = $port; V6Etkin = $false }
+    if ($Dns.V6Etkin) {
+        $v6 = $null
+        if ($Dns.V6 -isnot [string] -or -not [Net.IPAddress]::TryParse($Dns.V6, [ref]$v6) -or
+            $v6.AddressFamily -ne [Net.Sockets.AddressFamily]::InterNetworkV6) {
+            throw 'Hizmet ayarındaki IPv6 DNS adresi geçersiz.'
+        }
+        $sonuc.V6 = $v6.ToString()
+        $sonuc.V6Etkin = $true
+    }
+    return $sonuc
+}
 # WinDivert paylaşılan bir sistem sürücüsüdür; sahibini doğrulamadan silinmez.
 # GoodbyeDPI-TR kaldırması yalnız kendi hizmetini ve dosyalarını temizler.
 
 function Get-HizmetKomutu($Ayar) {
+    $profil = $null
+    if ($Ayar.profil -is [string]) {
+        $profil = $Script:Profiller | Where-Object { $_.Ad -ceq $Ayar.profil } | Select-Object -First 1
+    } elseif ($null -eq $Ayar.profil -and $Ayar.arg -is [string]) {
+        # Profil adı olmadan kaydedilen ayarlarda yalnızca bilinen argüman dizisini kabul et.
+        $profil = $Script:Profiller | Where-Object { $_.Arg -ceq $Ayar.arg } | Select-Object -First 1
+    }
+    if (-not $profil -or ($null -ne $Ayar.arg -and ($Ayar.arg -isnot [string] -or $Ayar.arg -cne $profil.Arg))) {
+        throw 'Hizmet ayarındaki profil geçersiz. Ayarı yeniden oluşturun.'
+    }
+    if ($null -ne $Ayar.genel -and $Ayar.genel -isnot [bool]) {
+        throw 'Hizmet ayarındaki kapsam seçeneği geçersiz.'
+    }
     $exe = Join-Path $Script:KurulumDizini 'bin\goodbyedpi.exe'
     $liste = Join-Path $Script:KurulumDizini 'liste.txt'
-    $arg = Get-GdpiArgumanlari -Profil $Ayar.arg -Dns $Ayar.dns -ListeDosyalari $liste -Genel:([bool]$Ayar.genel)
+    $dns = Get-HizmetDnsAyari $Ayar.dns
+    $arg = Get-GdpiArgumanlari -Profil $profil.Arg -Dns $dns -ListeDosyalari $liste -Genel:([bool]$Ayar.genel)
     return "`"$exe`" $arg"
 }
 
+function Set-HizmetYolu($Hizmet, [string]$Yol) {
+    $sonuc = Invoke-CimMethod -InputObject $Hizmet -MethodName Change -Arguments @{ PathName = $Yol }
+    if ($null -eq $sonuc.ReturnValue -or $sonuc.ReturnValue -ne 0) {
+        throw "Hizmet komutu uygulanamadı (Windows kodu: $($sonuc.ReturnValue))."
+    }
+}
+
 function Update-HizmetKomutu($Ayar) {
-    # Kayıt defterine doğrudan yazılır: sc.exe config'e gömülü tırnak geçirmek PS 5.1'de güvenilir değil.
-    $anahtar = "HKLM:\SYSTEM\CurrentControlSet\Services\$Script:HizmetAdi"
-    Set-ItemProperty -Path $anahtar -Name ImagePath -Value (Get-HizmetKomutu $Ayar)
-    Stop-Hizmet $Script:HizmetAdi
-    Start-Service $Script:HizmetAdi
+    $komut = Get-HizmetKomutu $Ayar
+    $hizmet = Get-GdpiHizmetBilgisi
+    if (-not $hizmet -or $hizmet.StartMode -eq 'Disabled' -or $hizmet.State -notin 'Running', 'Stopped') {
+        throw 'Hizmet yeni ayarı almaya hazır değil.'
+    }
+    $calisiyordu = $hizmet.State -eq 'Running'
+    $eskiYol = $hizmet.PathName
+    $yolDegisikligiDenendi = $false
+    try {
+        if ($calisiyordu) { Stop-Hizmet $Script:HizmetAdi }
+        $yolDegisikligiDenendi = $true
+        Set-HizmetYolu $hizmet $komut
+        Start-Service $Script:HizmetAdi
+        if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet yeni ayarla başlatılamadı.' }
+        Start-Sleep -Seconds 3
+        if (-not (Test-Internet)) { throw 'Yeni ayarla bağlantı denetimi başarısız.' }
+        Save-Ayarlar $Ayar
+    } catch {
+        $ilkHata = $_
+        try {
+            if ($yolDegisikligiDenendi) {
+                Stop-Hizmet $Script:HizmetAdi
+                Set-HizmetYolu $hizmet $eskiYol
+            }
+            if ($calisiyordu -and (Get-Hizmet $Script:HizmetAdi).Status -ne 'Running') {
+                Start-Service $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet önceki ayarla başlatılamadı.' }
+            }
+        } catch {
+            throw "Ayar uygulanamadı: $($ilkHata.Exception.Message) Geri alma başarısız: $($_.Exception.Message)"
+        }
+        throw $ilkHata
+    }
 }
 
 # --- Bekçi durumu ---------------------------------------------------------
@@ -531,39 +791,72 @@ function Read-BekciDurumu {
             $d | Add-Member -NotePropertyName $alan -NotePropertyValue $(if ($alan -eq 'ardisikHata') { 0 } else { $null })
         }
     }
+    $sayi = 0
+    if (($d.ardisikHata -isnot [int] -and $d.ardisikHata -isnot [long]) -or
+        -not [int]::TryParse([string]$d.ardisikHata, [ref]$sayi) -or $sayi -lt 0) {
+        Uyari 'Bekçi hata sayacı geçersiz; sıfırlandı.'
+        $sayi = 0
+    }
+    $d.ardisikHata = [Math]::Min($sayi, 1000)
+    foreach ($alan in 'sonYenidenBul', 'durduruldu', 'sonListe') {
+        if ($null -eq $d.$alan) { continue }
+        if ($null -eq (ConvertTo-BekciZamani $d.$alan)) {
+            Uyari "Bekçi tarih alanı geçersiz; sıfırlandı: $alan"
+            $d.$alan = $null
+        }
+    }
+    if ($null -ne $d.durdurmaNedeni -and $d.durdurmaNedeni -notin 'dns', 'internet') {
+        Uyari 'Bekçi durdurma nedeni geçersiz; otomatik başlatma kaydı sıfırlandı.'
+        $d.durduruldu = $null
+        $d.durdurmaNedeni = $null
+    }
+    if (-not $d.durduruldu) { $d.durdurmaNedeni = $null }
     return $d
 }
 
+function ConvertTo-BekciZamani($Zaman) {
+    if ($Zaman -is [datetime]) { return $Zaman }
+    if ($Zaman -isnot [string]) { return $null }
+    $tarih = [datetime]::MinValue
+    if ([datetime]::TryParseExact($Zaman, [string[]]@('s', 'o'),
+        [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$tarih)) {
+        return $tarih
+    }
+    return $null
+}
+
 function Test-SureGecti($Zaman, [TimeSpan]$Aralik) {
-    if (-not $Zaman) { return $true }
-    return ((Get-Date) - [datetime]$Zaman) -ge $Aralik
+    $tarih = ConvertTo-BekciZamani $Zaman
+    if ($null -eq $tarih) { return $true }
+    $simdi = Get-Date
+    # Sistem saati geri alındığında gelecekte kalan kayıt sonsuz beklemeye yol açmasın.
+    if ($tarih -gt $simdi) { return $true }
+    return ($simdi - $tarih) -ge $Aralik
 }
 
 # --- Komutlar -------------------------------------------------------------
 
 function Invoke-Bul {
-    param([string[]]$Hedefler, [switch]$Genel)
+    param([string[]]$Hedefler, [switch]$Genel, [switch]$Kaydetme)
     Baslik 'Çalışan ayar aranıyor'
+    if ((Get-GdpiHizmetBilgisi).StartMode -eq 'Disabled') {
+        throw 'Hizmet duraklatıldı. Profil aramadan önce devam komutunu çalıştırın.'
+    }
 
-    # Başka bir aracın hizmetini veya sürecini otomatik durdurma.
-    # Bir çakışma varsa kullanıcıya haber ver; yalnız kendi hizmetimizi ölçüm için geçici durdur.
+    $eski = Get-Hizmet 'GoodbyeDPI'
+    if (($eski -and $eski.Status -ne 'Stopped') -or (Get-YabanciGdpiSurecleri)) {
+        throw 'Başka bir GoodbyeDPI çalışıyor. Ölçümden önce o kurulumun kendi aracından durdurun.'
+    }
+    # Çalışan bir GoodbyeDPI ölçümü bozar: hizmet açıkken engel "yok" görünür.
     $hizmetCalisiyordu = $false
-    try {
-        $eski = Get-Hizmet 'GoodbyeDPI'
-        if ($eski -and $eski.Status -eq 'Running') {
-            throw "Eski 'GoodbyeDPI' hizmeti çalışıyor. Ölçüm için hizmeti kendiniz durdurun; bu araç başka hizmetleri durdurmaz."
-        }
-        $yabanci = @(Get-YabanciGdpiSurecleri)
-        if ($yabanci.Count -gt 0) {
-            throw "Başka bir goodbyedpi.exe çalışıyor (PID: $(($yabanci | ForEach-Object Id) -join ', ')). Önce kendi uygulamasından durdurun; süreçlere dokunulmadı."
-        }
-        $h = Get-Hizmet $Script:HizmetAdi
-        if ($h -and $h.Status -eq 'Running') {
-            Yaz '  Ölçüm için yalnız GoodbyeDPI-TR hizmeti geçici olarak durduruluyor...'
-            Stop-Hizmet $Script:HizmetAdi
-            $hizmetCalisiyordu = $true
-        }
+    $h = Get-Hizmet $Script:HizmetAdi
 
+    try {
+        if ($h -and $h.Status -eq 'Running') {
+            $hizmetCalisiyordu = $true
+            Yaz '  Ölçüm için GoodbyeDPI-TR hizmeti geçici olarak durduruluyor...'
+            Stop-Hizmet $Script:HizmetAdi
+        }
         if (-not (Test-Internet)) { throw 'İnternet bağlantısı yok (kontrol sitelerine ulaşılamadı). Önce bağlantınızı kontrol edin.' }
 
         $doh = Find-Doh
@@ -629,16 +922,31 @@ function Invoke-Bul {
             asn      = $issAsn
             tarih    = (Get-Date).ToString('s')
         }
-        Save-Ayarlar $ayar
-        Basari "Ayarlar kaydedildi: $Script:AyarDosyasi"
+        if (-not $Kaydetme) {
+            Save-Ayarlar $ayar
+            Basari "Ayarlar kaydedildi: $Script:AyarDosyasi"
+        }
         return $ayar
     } finally {
         if ($hizmetCalisiyordu -and (Get-Hizmet $Script:HizmetAdi)) { Start-Service $Script:HizmetAdi -ErrorAction SilentlyContinue }
     }
 }
 
+function Get-KaldirmaDegerleri {
+    $cmd = Join-Path $Script:KurulumDizini 'GoodbyeDPI-TR.cmd'
+    return @{
+        DisplayName     = 'GoodbyeDPI-TR'
+        DisplayVersion  = $Script:Surum
+        Publisher       = 'GoodbyeDPI-TR'
+        InstallLocation = $Script:KurulumDizini
+        URLInfoAbout    = $Script:ProjeUrl
+        UninstallString = "`"$cmd`" kaldir"
+        NoModify        = 1
+        NoRepair        = 1
+    }
+}
+
 function Install-Kisayollar {
-    # Başlat menüsü kısayolu ve Programlar ve Özellikler kaydı.
     $cmd = Join-Path $Script:KurulumDizini 'GoodbyeDPI-TR.cmd'
     $kabuk = New-Object -ComObject WScript.Shell
     $k = $kabuk.CreateShortcut($Script:Kisayol)
@@ -647,23 +955,96 @@ function Install-Kisayollar {
     $k.Description = 'GoodbyeDPI-TR menüsü'
     $k.Save()
 
-    New-Item -Path $Script:KaldirmaAnahtari -Force | Out-Null
-    $degerler = @{
-        DisplayName     = 'GoodbyeDPI-TR'
-        DisplayVersion  = $Script:Surum
-        Publisher       = 'GoodbyeDPI-TR'
-        InstallLocation = $Script:KurulumDizini
-        URLInfoAbout    = $Script:ProjeUrl
-        UninstallString = "`"$cmd`" kaldir"
+    if (-not (Test-Path -LiteralPath $Script:KaldirmaAnahtari)) {
+        New-Item -Path $Script:KaldirmaAnahtari | Out-Null
     }
-    foreach ($ad in $degerler.Keys) { Set-ItemProperty -Path $Script:KaldirmaAnahtari -Name $ad -Value $degerler[$ad] }
-    Set-ItemProperty -Path $Script:KaldirmaAnahtari -Name NoModify -Value 1 -Type DWord
-    Set-ItemProperty -Path $Script:KaldirmaAnahtari -Name NoRepair -Value 1 -Type DWord
+    $degerler = Get-KaldirmaDegerleri
+    foreach ($ad in $degerler.Keys) {
+        $tur = if ($degerler[$ad] -is [int]) { 'DWord' } else { 'String' }
+        New-ItemProperty -LiteralPath $Script:KaldirmaAnahtari -Name $ad -Value $degerler[$ad] -PropertyType $tur -Force | Out-Null
+    }
+}
+
+function Get-BekciGorevi {
+    Get-ScheduledTask | Where-Object { $_.TaskName -eq $Script:GorevAdi -and $_.TaskPath -eq '\' }
+}
+
+function Get-KurulumKayitYedegi {
+    $yedek = @{ GorevXml = $null; Kisayol = $null; AnahtarVardi = $false; Degerler = @{} }
+    if (Get-BekciGorevi) {
+        $yedek.GorevXml = Export-ScheduledTask -TaskName $Script:GorevAdi -TaskPath '\'
+        if (-not $yedek.GorevXml) { throw 'Mevcut bekçi görevi yedeklenemedi.' }
+    }
+    if ([IO.File]::Exists($Script:Kisayol)) { $yedek.Kisayol = [IO.File]::ReadAllBytes($Script:Kisayol) }
+    if (Test-Path -LiteralPath $Script:KaldirmaAnahtari) {
+        $yedek.AnahtarVardi = $true
+        $anahtar = Get-Item -LiteralPath $Script:KaldirmaAnahtari
+        try {
+            foreach ($ad in (Get-KaldirmaDegerleri).Keys) {
+                if ($ad -in $anahtar.GetValueNames()) {
+                    $yedek.Degerler[$ad] = @{
+                        Deger = $anahtar.GetValue($ad, $null, 'DoNotExpandEnvironmentNames')
+                        Tur = $anahtar.GetValueKind($ad)
+                    }
+                }
+            }
+        } finally {
+            $anahtar.Dispose()
+        }
+    }
+    return $yedek
+}
+
+function Restore-KurulumKayitlari($Yedek, [bool]$KisayolaDokunuldu) {
+    $hatalar = @()
+    try {
+        if ($Yedek.GorevXml) {
+            Register-ScheduledTask -TaskName $Script:GorevAdi -TaskPath '\' -Xml $Yedek.GorevXml -Force | Out-Null
+        } elseif (Get-BekciGorevi) {
+            Unregister-ScheduledTask -TaskName $Script:GorevAdi -TaskPath '\' -Confirm:$false
+        }
+    } catch { $hatalar += "Bekçi: $($_.Exception.Message)" }
+
+    if ($KisayolaDokunuldu) {
+        try {
+            if ($null -ne $Yedek.Kisayol) {
+                [IO.File]::WriteAllBytes($Script:Kisayol, $Yedek.Kisayol)
+            } elseif ([IO.File]::Exists($Script:Kisayol)) {
+                [IO.File]::Delete($Script:Kisayol)
+            }
+        } catch { $hatalar += "Kısayol: $($_.Exception.Message)" }
+        try {
+            if ($Yedek.AnahtarVardi) {
+                $altYol = $Script:KaldirmaAnahtari.Substring('HKLM:\'.Length)
+                $anahtar = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey($altYol, $true)
+                if (-not $anahtar) { throw 'Önceki kaldırma kaydı açılamadı.' }
+                try {
+                    foreach ($ad in (Get-KaldirmaDegerleri).Keys) {
+                        if ($Yedek.Degerler.ContainsKey($ad)) {
+                            $onceki = $Yedek.Degerler[$ad]
+                            $anahtar.SetValue($ad, $onceki.Deger, $onceki.Tur)
+                        } else {
+                            $anahtar.DeleteValue($ad, $false)
+                        }
+                    }
+                } finally {
+                    $anahtar.Dispose()
+                }
+            } elseif (Test-Path -LiteralPath $Script:KaldirmaAnahtari) {
+                if (Get-ChildItem -LiteralPath $Script:KaldirmaAnahtari) {
+                    throw 'Kaldırma kaydında beklenmeyen alt anahtar var.'
+                }
+                Remove-Item -LiteralPath $Script:KaldirmaAnahtari -Confirm:$false
+            }
+        } catch { $hatalar += "Kaldırma kaydı: $($_.Exception.Message)" }
+    }
+    if ($hatalar) { throw ($hatalar -join ' | ') }
 }
 
 function Install-BekciGorevi {
     $ps1 = Join-Path $Script:KurulumDizini 'gdpi-tr.ps1'
-    $eylem = New-ScheduledTaskAction -Execute 'powershell.exe' `
+    $powershell = Join-Path $Script:SistemDizini 'WindowsPowerShell\v1.0\powershell.exe'
+    $eylem = New-ScheduledTaskAction -Execute $powershell `
         -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$ps1`" bekci"
 
     $acilis = New-ScheduledTaskTrigger -AtStartup
@@ -685,56 +1066,129 @@ function Install-BekciGorevi {
 
 function Invoke-Kur {
     param([switch]$Genel, [string[]]$Hedefler, [switch]$YenidenBul)
+    if ((Get-Hizmet 'GoodbyeDPI') -or (Get-YabanciGdpiSurecleri)) {
+        throw 'Başka bir GoodbyeDPI kurulumu bulundu. Devam etmeden önce eski kurulumu kendi kaldırma aracından kaldırın.'
+    }
     $ayar = Read-Ayarlar
     if (-not $ayar -or $YenidenBul) {
-        $ayar = Invoke-Bul -Hedefler $Hedefler -Genel:$Genel
+        $ayar = Invoke-Bul -Hedefler $Hedefler -Genel:$Genel -Kaydetme
         if (-not $ayar) { return }
     }
     Baslik 'Kurulum'
 
-    if (Get-Hizmet 'GoodbyeDPI') {
-        throw "Eski 'GoodbyeDPI' hizmeti yüklü. Başka yazılımı otomatik kaldırmıyoruz; önce bu hizmeti kendiniz kaldırın veya 'kaldir -Eski' komutunu bilinçli olarak çalıştırın."
-    }
-    $yabanci = @(Get-YabanciGdpiSurecleri)
-    if ($yabanci.Count -gt 0) {
-        throw "Başka bir goodbyedpi.exe çalışıyor (PID: $(($yabanci | ForEach-Object Id) -join ', ')). Kurulum için önce ilgili uygulamadan kapatın."
-    }
-    Remove-Hizmet $Script:HizmetAdi | Out-Null
-
+    $komut = Get-HizmetKomutu $ayar
     $bin = Get-Ikililer
     $hedefBin = Join-Path $Script:KurulumDizini 'bin'
     $hedefListe = Join-Path $Script:KurulumDizini 'listeler'
-    New-Item -ItemType Directory -Force -Path $hedefBin, $hedefListe | Out-Null
-    Copy-Item (Join-Path $bin '*') $hedefBin -Force
-    if (-not (Test-IkiliHashleri $hedefBin (Get-Mimari))) { throw 'Kopyalanan dosyaların hash doğrulaması başarısız.' }
-
+    $mimari = Get-Mimari
+    $dosyalar = [ordered]@{}
+    foreach ($ad in $Script:Paket.Dosyalar[$mimari].Keys) {
+        $dosyalar[(Join-Path $hedefBin $ad)] = Join-Path $bin $ad
+    }
     if ($Script:KaynakDizini -ne $Script:KurulumDizini) {
-        Get-ListeDosyalari $Script:KaynakDizini | ForEach-Object { Copy-Item $_ $hedefListe -Force }
-        Copy-Item $PSCommandPath (Join-Path $Script:KurulumDizini 'gdpi-tr.ps1') -Force
+        foreach ($dosya in Get-KurulumListeKopyalari $Script:KaynakDizini $hedefListe) {
+            $dosyalar[$dosya.Hedef] = $dosya.Kaynak
+        }
+        $dosyalar[(Join-Path $Script:KurulumDizini 'gdpi-tr.ps1')] = $PSCommandPath
         $cmd = Join-Path $Script:KaynakDizini 'GoodbyeDPI-TR.cmd'
-        if (Test-Path $cmd) { Copy-Item $cmd $Script:KurulumDizini -Force }
+        if (Test-Path -LiteralPath $cmd) {
+            $dosyalar[(Join-Path $Script:KurulumDizini 'GoodbyeDPI-TR.cmd')] = $cmd
+        }
+    }
+    $liste = Join-Path $Script:KurulumDizini 'liste.txt'
+    $hizmet = Get-GdpiHizmetBilgisi
+    if ($hizmet -and $hizmet.State -notin 'Running', 'Stopped') {
+        throw "Kurulum başlamadı. Hizmet kararlı durumda değil ($($hizmet.State))."
+    }
+    $eskiYol = $hizmet.PathName
+    $calisiyordu = $hizmet.State -eq 'Running'
+    $duraklatilmis = $hizmet.StartMode -eq 'Disabled'
+    $kayitYedegi = Get-KurulumKayitYedegi
+    $yedek = @{}
+    foreach ($yol in @($dosyalar.Keys) + $liste) {
+        $yedek[$yol] = if ([IO.File]::Exists($yol)) { ,([IO.File]::ReadAllBytes($yol)) } else { $null }
+    }
+    $yeniHizmet = $false
+    $dosyalarDegisti = $false
+    $goreveDokunuldu = $false
+    $kisayolaDokunuldu = $false
+    try {
+        if ($calisiyordu) {
+            Stop-Hizmet $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) { throw 'Hizmet durdurulamadı.' }
+        }
+        $dosyalarDegisti = $true
+        New-Item -ItemType Directory -Force -Path $hedefBin, $hedefListe | Out-Null
+        foreach ($yol in $dosyalar.Keys) {
+            Copy-Item -LiteralPath $dosyalar[$yol] -Destination $yol -Force
+        }
+        if (-not (Test-IkiliHashleri $hedefBin $mimari)) { throw 'Kopyalanan dosyaların hash doğrulaması başarısız.' }
+        Write-Liste (Get-ListeDosyalari $Script:KurulumDizini) @($ayar.hedefler) $liste | Out-Null
+        if ($hizmet) {
+            Set-HizmetYolu $hizmet $komut
+        } else {
+            New-Service -Name $Script:HizmetAdi -BinaryPathName $komut -DisplayName 'GoodbyeDPI-TR' `
+                -StartupType Automatic -Description 'GoodbyeDPI-TR bağlantı hizmeti.' | Out-Null
+            $yeniHizmet = $true
+            & $Script:ScExe failure $Script:HizmetAdi reset= 86400 actions= restart/5000/restart/30000// | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "Hizmet kurtarma ayarı uygulanamadı ($LASTEXITCODE)." }
+        }
+        if (-not $duraklatilmis) {
+            Start-Service $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet başlatılamadı.' }
+            Start-Sleep -Seconds 3
+            if (-not (Test-Internet)) { throw 'Kurulumdan sonra internet denetimi başarısız.' }
+        }
+        $goreveDokunuldu = $true
+        Install-BekciGorevi
+        $kisayolaDokunuldu = $true
+        Install-Kisayollar
+        Save-Ayarlar $ayar
+    } catch {
+        $ilkHata = $_
+        $geriAlmaHatalari = @()
+        try {
+            if ($yeniHizmet) {
+                Remove-Hizmet $Script:HizmetAdi | Out-Null
+                if (Get-Hizmet $Script:HizmetAdi) { throw 'Yeni hizmet kaldırılamadı.' }
+            } elseif ($hizmet -and $dosyalarDegisti) {
+                Stop-Hizmet $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) { throw 'Hizmet durdurulamadı.' }
+                Set-HizmetYolu $hizmet $eskiYol
+            }
+            if ($dosyalarDegisti) {
+                foreach ($yol in $yedek.Keys) {
+                    if ($null -eq $yedek[$yol]) {
+                        if ([IO.File]::Exists($yol)) { [IO.File]::Delete($yol) }
+                    } else {
+                        [IO.File]::WriteAllBytes($yol, $yedek[$yol])
+                    }
+                }
+            }
+            if ($calisiyordu -and (Get-Hizmet $Script:HizmetAdi).Status -ne 'Running') {
+                Start-Service $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Önceki hizmet başlatılamadı.' }
+            }
+        } catch {
+            $geriAlmaHatalari += $_.Exception.Message
+        }
+        if ($goreveDokunuldu) {
+            try {
+                Restore-KurulumKayitlari $kayitYedegi $kisayolaDokunuldu
+            } catch {
+                $geriAlmaHatalari += $_.Exception.Message
+            }
+        }
+        if ($geriAlmaHatalari) {
+            throw "Kurulum başarısız: $($ilkHata.Exception.Message) Geri alma da başarısız: $($geriAlmaHatalari -join ' | ')"
+        }
+        throw $ilkHata
     }
 
-    Write-Liste (Get-ListeDosyalari $Script:KurulumDizini) @($ayar.hedefler) (Join-Path $Script:KurulumDizini 'liste.txt') | Out-Null
-
-    # sc.exe yerine New-Service: PowerShell 5.1 yerel komutlara gömülü tırnakları bozuyor.
-    New-Service -Name $Script:HizmetAdi -BinaryPathName (Get-HizmetKomutu $ayar) -DisplayName 'GoodbyeDPI-TR' `
-        -StartupType Automatic -Description 'Türkiye için DPI atlatma. Kaldırmak için Başlat menüsünden GoodbyeDPI-TR.' | Out-Null
-    & sc.exe failure $Script:HizmetAdi reset= 86400 actions= restart/5000/restart/30000// | Out-Null
-    Start-Service $Script:HizmetAdi
-    Start-Sleep -Seconds 3
-
-    # Kurulum bekçisi: genel internet bozulduysa geri al.
-    if (-not (Test-Internet)) {
-        Hata 'Kurulumdan sonra internet çalışmadı. Değişiklik geri alınıyor.'
-        Remove-Hizmet $Script:HizmetAdi | Out-Null
-        # WinDivert başka yazılımların da olabilir; sistem sürücülerini silme.
-        Yaz '  "doktor" komutuyla çakışan yazılımları kontrol edin (Kaspersky, Avast vb.).'
+    if ($duraklatilmis) {
+        Basari 'Kurulum güncellendi. Hizmet duraklatılmış durumda.'
         return
     }
-
-    Install-BekciGorevi
-    Install-Kisayollar
     Basari "Hizmet kuruldu ve çalışıyor ($($ayar.profil)). Bekçi görevi her 15 dakikada ve ağ değişiminde denetleyecek."
     $sonuc = Invoke-Test -Hedefler @($ayar.hedefler)
     if ($sonuc -contains $false) {
@@ -742,28 +1196,69 @@ function Invoke-Kur {
     }
 }
 
+function Assert-KurulumSilmeYolu {
+    $programlar = [Environment]::GetFolderPath('ProgramFiles')
+    if (-not $programlar) { throw 'Windows Program Files dizini bulunamadı.' }
+    $beklenen = Join-Path $programlar 'GoodbyeDPI-TR'
+    if ([IO.Path]::GetFullPath($Script:KurulumDizini) -ine $beklenen) {
+        throw 'Kurulum dizini doğrulanamadı; dosyalar silinmedi.'
+    }
+    if (-not (Test-Path -LiteralPath $beklenen)) { return }
+    $kok = Get-Item -LiteralPath $beklenen -Force
+    $ust = Get-Item -LiteralPath $programlar -Force
+    if (-not $kok.PSIsContainer -or
+        ($kok.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        ($ust.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Kurulum yolu bir bağlantı veya beklenmeyen bir dosya içeriyor.'
+    }
+    $dizinler = New-Object 'System.Collections.Generic.Stack[string]'
+    $dizinler.Push($kok.FullName)
+    while ($dizinler.Count -gt 0) {
+        foreach ($oge in Get-ChildItem -LiteralPath ($dizinler.Pop()) -Force) {
+            if ($oge.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw "Kurulum dizininde bağlantı bulundu: $($oge.FullName)"
+            }
+            if ($oge.PSIsContainer) { $dizinler.Push($oge.FullName) }
+        }
+    }
+}
+
 function Invoke-Kaldir {
     param([switch]$Eski)
     Baslik 'Kaldırma'
-    if (Get-ScheduledTask -TaskName $Script:GorevAdi -ErrorAction SilentlyContinue) {
-        Unregister-ScheduledTask -TaskName $Script:GorevAdi -Confirm:$false
+    Assert-KurulumSilmeYolu
+    $surucuVardi = Test-WinDivertKaydi
+    if (Remove-Hizmet $Script:HizmetAdi) { Basari "$Script:HizmetAdi hizmeti kaldırıldı" } else { Yaz '  GoodbyeDPI-TR hizmeti yok.' }
+    if (Get-BekciGorevi) {
+        Unregister-ScheduledTask -TaskName $Script:GorevAdi -TaskPath '\' -Confirm:$false
         Basari 'Bekçi görevi kaldırıldı'
     }
-    if (Remove-Hizmet $Script:HizmetAdi) { Basari "$Script:HizmetAdi hizmeti kaldırıldı" } else { Yaz '  GoodbyeDPI-TR hizmeti yok.' }
     if ($Eski) {
         if (Remove-Hizmet 'GoodbyeDPI') { Basari 'Eski GoodbyeDPI hizmeti kaldırıldı' }
     }
-    $yabanci = @(Get-YabanciGdpiSurecleri)
-    if ($yabanci.Count -gt 0) {
-        Uyari "Diğer goodbyedpi.exe süreçleri çalışmaya devam ediyor (PID: $(($yabanci | ForEach-Object Id) -join ', ')). Bu süreçler otomatik kapatılmadı."
-    }
-    Start-Sleep -Seconds 1
-    Uyari 'Paylaşılan WinDivert sürücüleri kaldırılmadı; başka araçlar bunları kullanıyor olabilir.'
     foreach ($y in @($Script:Kisayol, $Script:KaldirmaAnahtari)) {
-        if (Test-Path $y) { Remove-Item $y -Recurse -Force -ErrorAction SilentlyContinue }
+        if (-not (Test-Path -LiteralPath $y)) { continue }
+        if ($y -eq $Script:KaldirmaAnahtari -and (Get-ChildItem -LiteralPath $y)) {
+            throw 'Kaldırma kaydında beklenmeyen alt anahtar var.'
+        }
+        Remove-Item -LiteralPath $y -Force -Confirm:$false
     }
-    foreach ($d in @($Script:KurulumDizini, $Script:EskiVeriDizini)) {
-        if (Test-Path $d) { Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue; Basari "Silindi: $d" }
+    if (Test-Path -LiteralPath $Script:KurulumDizini) {
+        Assert-KurulumSilmeYolu
+        $binKalsin = ($surucuVardi -or (Test-WinDivertKaydi)) -and
+            (Test-Path -LiteralPath (Join-Path $Script:KurulumDizini 'bin') -PathType Container)
+        if ($binKalsin) {
+            Get-ChildItem -LiteralPath $Script:KurulumDizini -Force |
+                Where-Object { $_.Name -ne 'bin' } |
+                ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force }
+            Uyari 'Paylaşılan WinDivert kaydı bulundu; sürücü ve bin klasörü korundu.'
+        } else {
+            Remove-Item -LiteralPath $Script:KurulumDizini -Recurse -Force
+            Basari "Silindi: $Script:KurulumDizini"
+        }
+    }
+    if (Test-Path -LiteralPath $Script:EskiVeriDizini) {
+        Uyari "Eski sürümün veri klasörü korundu: $Script:EskiVeriDizini"
     }
     Yaz '  DNS ayarlarınıza dokunulmadı; bu araç sistem DNS ayarını değiştirmez.'
 }
@@ -771,16 +1266,78 @@ function Invoke-Kaldir {
 function Invoke-Test {
     param([string[]]$Hedefler)
     Baslik 'Erişim testi (sistem DNS ile)'
-    $sonuc = Test-Hedefler $Hedefler
-    foreach ($h in $sonuc.Keys) { if ($sonuc[$h]) { Basari "$h açılıyor" } else { Hata "$h açılmıyor" } }
-    foreach ($k in $Script:KontrolSiteleri) { if (Test-Https $k) { Basari "$k (kontrol) açılıyor" } else { Hata "$k (kontrol) açılmıyor" } }
+    $sonuc = [ordered]@{}
+    foreach ($h in @($Hedefler | Select-Object -Unique)) {
+        $olcum = Invoke-HttpsOlcum $h
+        $sonuc[$h] = $olcum.Erisim
+        Write-HttpsSonucu $olcum
+    }
+    foreach ($k in $Script:KontrolSiteleri) {
+        Write-HttpsSonucu (Invoke-HttpsOlcum $k)
+    }
     return @($sonuc.Values)
+}
+
+function Write-HttpsSonucu($Olcum) {
+    $mesaj = "$($Olcum.Alan): $($Olcum.Aciklama)"
+    if (-not $Olcum.Erisim) {
+        Hata $mesaj
+    } elseif ($Olcum.HttpKodu -ge 400) {
+        Uyari $mesaj
+    } else {
+        Basari $mesaj
+    }
+}
+
+function Get-DurumOzeti {
+    $sonuc = [ordered]@{
+        SemaSurumu = 1
+        Surum = $Script:Surum
+        OkumaZamani = (Get-Date).ToUniversalTime().ToString('o')
+        Hizmet = 'Unknown'
+        Baslangic = $null
+        Duraklatildi = $null
+        Profil = $null
+        Genel = $null
+        AyarOkundu = $false
+        Uyarilar = @()
+        Hatalar = @()
+    }
+    try {
+        $hizmet = Get-GdpiHizmetBilgisi
+        if ($hizmet) {
+            $sonuc.Hizmet = [string]$hizmet.State
+            $sonuc.Baslangic = [string]$hizmet.StartMode
+            $sonuc.Duraklatildi = $hizmet.StartMode -eq 'Disabled'
+        } else {
+            $sonuc.Hizmet = 'NotInstalled'
+            $sonuc.Duraklatildi = $false
+        }
+    } catch {
+        $sonuc.Hatalar += 'Hizmet bilgisi okunamadı.'
+    }
+    $uyarilar = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        $ayar = Read-Ayarlar $uyarilar
+        if ($ayar) {
+            Get-HizmetKomutu $ayar | Out-Null
+            $sonuc.Profil = [string]$ayar.profil
+            $sonuc.Genel = [bool]$ayar.genel
+            $sonuc.AyarOkundu = $true
+        }
+    } catch {
+        $sonuc.Hatalar += 'Kaydedilmiş ayarlar okunamadı veya doğrulanamadı.'
+    }
+    $sonuc.Uyarilar = @($uyarilar.ToArray())
+    return [pscustomobject]$sonuc
 }
 
 function Invoke-Durum {
     Baslik 'Durum'
     $h = Get-Hizmet $Script:HizmetAdi
+    $duraklatilmis = $h -and (Get-GdpiHizmetBilgisi).StartMode -eq 'Disabled'
     if ($h) { Yaz "  Hizmet: $($h.Status)" } else { Yaz '  Hizmet: kurulu değil' }
+    if ($duraklatilmis) { Yaz '  Otomatik başlatma: duraklatıldı' }
     $g = Get-ScheduledTask -TaskName $Script:GorevAdi -ErrorAction SilentlyContinue
     if ($g) {
         $bilgi = $g | Get-ScheduledTaskInfo
@@ -799,7 +1356,7 @@ function Invoke-Durum {
             Yaz '  Bekçi günlüğü (son 5):'
             Get-Content $Script:GunlukDosyasi -Tail 5 -Encoding UTF8 | ForEach-Object { Yaz "    $_" 'DarkGray' }
         }
-        Invoke-Test -Hedefler @($ayar.hedefler) | Out-Null
+        if (-not $duraklatilmis) { Invoke-Test -Hedefler @($ayar.hedefler) | Out-Null }
     }
 }
 
@@ -906,85 +1463,131 @@ function Update-Liste {
     # Önce kaynağı ve birleşik listeyi ayrı dosyalarda doğrula. Bir hata varsa etkin
     # listeye dokunma; hizmet başlangıcı başarısızsa eski dosyaları geri yükle.
     $hedef = Join-Path $Script:KurulumDizini 'listeler\turkiye.txt'
-    $etkin = Join-Path $Script:KurulumDizini 'liste.txt'
-    if (-not (Test-Path $hedef)) { throw 'GoodbyeDPI-TR kurulu değil veya Türkiye listesi bulunamadı.' }
-
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    $icerik = [string](Invoke-WebRequest -Uri $Script:ListeUrl -UseBasicParsing -TimeoutSec 15).Content
-    $alanlar = @($icerik -split "\r?\n" | ForEach-Object { ($_ -replace '#.*$', '').Trim().ToLowerInvariant() } | Where-Object { $_ })
+    if (-not (Test-Path (Split-Path $hedef))) { throw 'GoodbyeDPI-TR kurulu değil.' }
+    $oncekiTls = [Net.ServicePointManager]::SecurityProtocol
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $icerik = (Invoke-WebRequest -Uri $Script:ListeUrl -UseBasicParsing -TimeoutSec 15).Content
+    } finally {
+        [Net.ServicePointManager]::SecurityProtocol = $oncekiTls
+    }
+    $alanlar = @($icerik -split "`r?`n" | ForEach-Object { ($_ -replace '#.*$', '').Trim().ToLowerInvariant() } | Where-Object { $_ })
     $gecersiz = @($alanlar | Where-Object { -not (Test-AlanAdi $_) })
     if ($gecersiz.Count -gt 0 -or $alanlar.Count -lt 3 -or $alanlar.Count -gt 5000) {
         throw "İndirilen liste geçersiz ($($alanlar.Count) satır, $($gecersiz.Count) hatalı); güncellenmedi."
     }
-    $eskiIcerik = Get-Content $hedef -Raw -Encoding UTF8
-    if (($eskiIcerik -replace '\r', '').Trim() -eq ($icerik -replace '\r', '').Trim()) { return $false }
+    $eski = ''
+    if (Test-Path -LiteralPath $hedef) { $eski = (Get-Content -LiteralPath $hedef -Raw -Encoding UTF8) -replace "`r", '' }
+    if ($eski.Trim() -eq ($icerik -replace "`r", '').Trim()) { return $false }
 
-    $id = [guid]::NewGuid().ToString('N')
-    $taslakKaynak = Join-Path $Script:VeriDizini "liste-kaynak-$id.tmp"
-    $taslakEtkin = Join-Path $Script:VeriDizini "liste-etkin-$id.tmp"
-    $yedekKaynak = Join-Path $Script:VeriDizini "liste-kaynak-$id.bak"
-    $yedekEtkin = Join-Path $Script:VeriDizini "liste-etkin-$id.bak"
-    $etkinVardi = Test-Path $etkin
-    try {
-        New-Item -ItemType Directory -Path $Script:VeriDizini -Force | Out-Null
-        Set-Content -Path $taslakKaynak -Value $icerik.TrimEnd() -Encoding UTF8
+    $ayar = Read-Ayarlar
+    $ekler = @(); if ($ayar) { $ekler = @($ayar.hedefler) }
+    $hizmet = Get-Hizmet $Script:HizmetAdi
+    if ($hizmet -and $hizmet.Status -notin 'Running', 'Stopped') {
+        throw "Hizmet kararlı bir durumda değil ($($hizmet.Status)); liste güncellenmedi."
+    }
+    $calisiyordu = $hizmet -and $hizmet.Status -eq 'Running'
+    $yenidenBaslat = $calisiyordu -and (Get-GdpiHizmetBilgisi).StartMode -ne 'Disabled'
+    if ($calisiyordu -and -not $yenidenBaslat) {
+        throw 'Duraklatılan hizmet hâlâ çalışıyor; liste güncellenmedi.'
+    }
 
-        # Kullanıcı listeleri korunur; yalnız uzak kaynak geçici dosya ile değiştirilir.
-        $kaynaklar = @(Get-ListeDosyalari $Script:KurulumDizini | Where-Object { $_ -ne $hedef })
-        $kaynaklar += $taslakKaynak
-        $ayar = Read-Ayarlar
-        $ekler = @()
-        if ($ayar -and $ayar.hedefler) { $ekler = @($ayar.hedefler) }
-        Write-Liste $kaynaklar $ekler $taslakEtkin | Out-Null
-
-        Copy-Item -Path $hedef -Destination $yedekKaynak -Force
-        if ($etkinVardi) { Copy-Item -Path $etkin -Destination $yedekEtkin -Force }
-        $hizmet = Get-Hizmet $Script:HizmetAdi
-        $calisiyordu = [bool]($hizmet -and $hizmet.Status -eq 'Running')
-        try {
-            Copy-Item -Path $taslakKaynak -Destination $hedef -Force
-            Copy-Item -Path $taslakEtkin -Destination $etkin -Force
-            if ($calisiyordu) {
-                Stop-Hizmet $Script:HizmetAdi
-                Start-Service $Script:HizmetAdi -ErrorAction Stop
-            }
-        } catch {
-            $sebep = $_.Exception.Message
-            try {
-                Copy-Item -Path $yedekKaynak -Destination $hedef -Force
-                if ($etkinVardi) {
-                    Copy-Item -Path $yedekEtkin -Destination $etkin -Force
-                } elseif (Test-Path $etkin) {
-                    Remove-Item $etkin -Force
-                }
-                if ($calisiyordu) {
-                    Stop-Hizmet $Script:HizmetAdi
-                    Start-Service $Script:HizmetAdi -ErrorAction Stop
-                }
-            } catch {
-                throw "Liste güncellemesi başarısız; geri yükleme de başarısız: $($_.Exception.Message)"
-            }
-            throw "Yeni liste uygulanamadı; önceki liste geri yüklendi. Neden: $sebep"
-        }
-        return $true
-    } finally {
-        foreach ($dosya in @($taslakKaynak, $taslakEtkin, $yedekKaynak, $yedekEtkin)) {
-            Remove-Item -Path $dosya -Force -ErrorAction SilentlyContinue
+    $kimlik = [Guid]::NewGuid().ToString('N')
+    $birlesik = Join-Path $Script:KurulumDizini 'liste.txt'
+    $dosyalar = foreach ($yol in $hedef, $birlesik) {
+        [pscustomobject]@{
+            Hedef = $yol
+            Gecici = "$yol.$kimlik.tmp"
+            Yedek = "$yol.$kimlik.bak"
+            Degisti = $false
         }
     }
+    $durdurmaDenendi = $false
+    $yedekleriTut = $false
+    try {
+        [IO.File]::WriteAllText($dosyalar[0].Gecici, $icerik.TrimEnd(), [Text.Encoding]::UTF8)
+        $kaynaklar = @(Get-ListeDosyalari $Script:KurulumDizini | Where-Object { $_ -ne $hedef })
+        $kaynaklar += $dosyalar[0].Gecici
+        Write-Liste $kaynaklar $ekler $dosyalar[1].Gecici | Out-Null
+        if ($yenidenBaslat) {
+            $durdurmaDenendi = $true
+            Stop-Hizmet $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) { throw 'Hizmet durdurulamadı.' }
+        }
+        foreach ($dosya in $dosyalar) {
+            if ([IO.Directory]::Exists($dosya.Hedef)) {
+                throw "Liste dosyası yerine klasör var: $($dosya.Hedef)"
+            }
+            if ([IO.File]::Exists($dosya.Hedef)) {
+                [IO.File]::Replace($dosya.Gecici, $dosya.Hedef, $dosya.Yedek)
+            } else {
+                [IO.File]::Move($dosya.Gecici, $dosya.Hedef)
+            }
+            $dosya.Degisti = $true
+        }
+        if ($yenidenBaslat) {
+            Start-Service $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Yeni listeyle hizmet başlatılamadı.' }
+        }
+    } catch {
+        $ilkHata = $_
+        try {
+            $degisenler = @($dosyalar | Where-Object { $_.Degisti -or [IO.File]::Exists($_.Yedek) })
+            if ($durdurmaDenendi -and $degisenler) {
+                Stop-Hizmet $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) { throw 'Geri alma için hizmet durdurulamadı.' }
+            }
+            foreach ($dosya in $degisenler) {
+                if ([IO.File]::Exists($dosya.Yedek)) {
+                    if ([IO.File]::Exists($dosya.Hedef)) {
+                        [IO.File]::Replace($dosya.Yedek, $dosya.Hedef, [NullString]::Value)
+                    } else {
+                        [IO.File]::Move($dosya.Yedek, $dosya.Hedef)
+                    }
+                } else {
+                    [IO.File]::Delete($dosya.Hedef)
+                }
+            }
+            if ($durdurmaDenendi -and (Get-Hizmet $Script:HizmetAdi).Status -ne 'Running') {
+                Start-Service $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet önceki listeyle başlatılamadı.' }
+            }
+        } catch {
+            $yedekleriTut = $true
+            throw "Liste güncellenemedi: $($ilkHata.Exception.Message) Geri alma başarısız: $($_.Exception.Message)"
+        }
+        throw $ilkHata
+    } finally {
+        foreach ($dosya in $dosyalar) {
+            $temizlenecek = @($dosya.Gecici)
+            if (-not $yedekleriTut) { $temizlenecek += $dosya.Yedek }
+            foreach ($yol in $temizlenecek) {
+                if ([IO.File]::Exists($yol)) {
+                    try { [IO.File]::Delete($yol) } catch { Uyari "Geçici dosya silinemedi: $yol" }
+                }
+            }
+        }
+    }
+    return $true
 }
 
 function Invoke-ListeGuncelle {
     Baslik 'Liste güncelleme'
-    if (Update-Liste) { Basari 'Liste güncellendi ve hizmet yeniden başlatıldı.' } else { Basari 'Liste zaten güncel.' }
+    if (Update-Liste) { Basari 'Liste güncellendi. Hizmet çalışıyorsa yeniden başlatıldı.' } else { Basari 'Liste zaten güncel.' }
 }
 
 function Invoke-Bekci {
     # Bekçi görevi tarafından çalıştırılır. Sessizdir, bekci.log'a yazar.
     $Script:Sessiz = $true
+    $hizmet = Get-Hizmet $Script:HizmetAdi
+    if (-not $hizmet -or (Get-GdpiHizmetBilgisi).StartMode -eq 'Disabled') { return }
     $ayar = Read-Ayarlar
-    if (-not $ayar -or -not (Get-Hizmet $Script:HizmetAdi)) { return }
+    if (-not $ayar) { return }
     $durum = Read-BekciDurumu
+    # Yalnızca bekçinin kendisinin durdurduğu hizmeti otomatik kurtar.
+    if ($hizmet.Status -eq 'Stopped' -and -not $durum.durduruldu) { return }
+    if ($hizmet.Status -ne 'Running' -and $durum.durduruldu -and $durum.durdurmaNedeni -eq 'internet' -and
+        -not (Test-SureGecti $durum.durduruldu $Script:YenidenBulAraligi)) { return }
     $kaydet = { Save-Json $durum $Script:BekciDosyasi }
     $kontrolAlani = $Script:KontrolSiteleri[0]
 
@@ -1000,8 +1603,9 @@ function Invoke-Bekci {
         $yeni = Find-DnsSunucusu @($kontrolAlani)
         if ($yeni) {
             $ayar.dns = $yeni
-            Save-Ayarlar $ayar
             Update-HizmetKomutu $ayar
+            $durum.durduruldu = $null
+            $durum.durdurmaNedeni = $null
             Yaz "DNS değiştirildi: $($yeni.Ad)"
         } else {
             Stop-Hizmet $Script:HizmetAdi
@@ -1016,10 +1620,8 @@ function Invoke-Bekci {
     $h = Get-Hizmet $Script:HizmetAdi
     if ($h.Status -ne 'Running') {
         # Neden bilinmiyorsa (1.1.0'dan kalan kayıt) açılır; interneti bozarsa 3. adım yeniden durdurur.
-        $bekle = $durum.durduruldu -and $durum.durdurmaNedeni -eq 'internet' -and
-            -not (Test-SureGecti $durum.durduruldu $Script:YenidenBulAraligi)
-        if ($bekle) { return }
-        Start-Service $Script:HizmetAdi -ErrorAction SilentlyContinue
+        Start-Service $Script:HizmetAdi
+        if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet yeniden başlatılamadı.' }
         Start-Sleep -Seconds 3
         if ($durum.durduruldu) { Yaz 'Hizmet yeniden başlatıldı.' }
         $durum.durduruldu = $null; $durum.durdurmaNedeni = $null
@@ -1048,11 +1650,12 @@ function Invoke-Bekci {
     if ([int]$durum.ardisikHata -ge 2 -and (Test-SureGecti $durum.sonYenidenBul $Script:YenidenBulAraligi)) {
         Yaz 'Hedefler açılmıyor; profil yeniden aranıyor.'
         $durum.sonYenidenBul = (Get-Date).ToString('s'); & $kaydet
-        $yeni = Invoke-Bul -Hedefler @($ayar.hedefler) -Genel:([bool]$ayar.genel)
+        $yeni = Invoke-Bul -Hedefler @($ayar.hedefler) -Genel:([bool]$ayar.genel) -Kaydetme
         if ($yeni) {
             Update-HizmetKomutu $yeni
             $durum.ardisikHata = 0
             $durum.durduruldu = $null
+            $durum.durdurmaNedeni = $null
             Yaz "Yeni profil uygulandı: $($yeni.profil)"
         }
     }
@@ -1072,6 +1675,24 @@ function Invoke-Bekci {
     & $kaydet
 }
 
+function Invoke-KilitliIslem([scriptblock]$Islem, [switch]$Bekci) {
+    # Kilit kurulum dizininin dışında kalır; kaldırma işlemi de aynı kilidi tutar.
+    $yol = $Script:KurulumDizini + '.lock'
+    try {
+        $kilit = [IO.File]::Open($yol, 'OpenOrCreate', 'ReadWrite', 'None')
+    } catch [IO.IOException] {
+        $kod = $_.Exception.GetBaseException().HResult -band 0xFFFF
+        if ($kod -notin 32, 33) { throw }
+        if ($Bekci) { return }
+        throw 'Başka bir GoodbyeDPI-TR işlemi devam ediyor. Tamamlandıktan sonra yeniden deneyin.'
+    }
+    try {
+        & $Islem
+    } finally {
+        $kilit.Dispose()
+    }
+}
+
 function Show-Menu {
     while ($true) {
         Yaz ''
@@ -1082,20 +1703,24 @@ function Show-Menu {
         Yaz '  4) Doktor (sorun tarama)'
         Yaz '  5) Engelli site listesini güncelle'
         Yaz '  6) Tamamen kaldır'
-        Yaz '  7) Eski GoodbyeDPI-Turkey dahil tamamen kaldır'
-        Yaz '  8) Gizlilik korumalı teşhis raporu oluştur'
+        Yaz '  7) Eski GoodbyeDPI hizmetini de kaldır'
+        Yaz '  8) Duraklat'
+        Yaz '  9) Devam et'
+        Yaz '  10) Gizlilik korumalı teşhis raporu oluştur'
         Yaz '  0) Çıkış'
         $s = Read-Host 'Seçim'
         try {
             switch ($s) {
-                '1' { Invoke-Kur -Hedefler $Script:Hedefler -YenidenBul }
-                '2' { Invoke-Bul -Hedefler $Script:Hedefler | Out-Null }
+                '1' { Invoke-KilitliIslem { Invoke-Kur -Hedefler $Script:Hedefler -YenidenBul } }
+                '2' { Invoke-KilitliIslem { Invoke-Bul -Hedefler $Script:Hedefler | Out-Null } }
                 '3' { Invoke-Durum }
                 '4' { Invoke-Doktor }
-                '5' { Invoke-ListeGuncelle }
-                '6' { Invoke-Kaldir }
-                '7' { Invoke-Kaldir -Eski }
-                '8' { Invoke-Rapor }
+                '5' { Invoke-KilitliIslem { Invoke-ListeGuncelle } }
+                '6' { Invoke-KilitliIslem { Invoke-Kaldir } }
+                '7' { Invoke-KilitliIslem { Invoke-Kaldir -Eski } }
+                '8' { Invoke-KilitliIslem { Invoke-Duraklat } }
+                '9' { Invoke-KilitliIslem { Invoke-Devam } }
+                '10' { Invoke-Rapor }
                 '0' { return }
             }
         } catch {
@@ -1112,6 +1737,15 @@ function Main {
     $Script:Hedefler = $Hedef
     if (-not $Script:Hedefler) { $Script:Hedefler = $Script:VarsayilanHedefler }
 
+    if ($Json) {
+        if ($Komut -ne 'durum') {
+            [Console]::Error.WriteLine('-Json yalnızca durum komutunda kullanılabilir.')
+            exit 1
+        }
+        Get-DurumOzeti | ConvertTo-Json -Depth 5
+        return
+    }
+
     if ($Komut -notin @('test', 'rapor') -and -not (Test-Yonetici)) {
         Hata 'Bu araç yönetici olarak çalıştırılmalı (GoodbyeDPI-TR.cmd dosyasını kullanın).'
         exit 1
@@ -1119,16 +1753,18 @@ function Main {
     try {
         switch ($Komut) {
             'menu'   { Show-Menu }
-            'bul'    { Invoke-Bul -Hedefler $Script:Hedefler -Genel:$Genel | Out-Null }
+            'bul'    { Invoke-KilitliIslem { Invoke-Bul -Hedefler $Script:Hedefler -Genel:$Genel | Out-Null } }
             # -Genel veya -Hedef verildiyse kayıtlı ayar yerine yeniden aranır.
-            'kur'    { Invoke-Kur -Hedefler $Script:Hedefler -Genel:$Genel -YenidenBul:($Genel -or $hedefVerildi) }
-            'kaldir' { Invoke-Kaldir -Eski:$Eski }
+            'kur'    { Invoke-KilitliIslem { Invoke-Kur -Hedefler $Script:Hedefler -Genel:$Genel -YenidenBul:($Genel -or $hedefVerildi) } }
+            'kaldir' { Invoke-KilitliIslem { Invoke-Kaldir -Eski:$Eski } }
             'durum'  { Invoke-Durum }
+            'duraklat' { Invoke-KilitliIslem { Invoke-Duraklat } }
+            'devam' { Invoke-KilitliIslem { Invoke-Devam } }
             'doktor' { Invoke-Doktor }
             'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
-            'liste-guncelle' { Invoke-ListeGuncelle }
-            'bekci'  { Invoke-Bekci }
+            'liste-guncelle' { Invoke-KilitliIslem { Invoke-ListeGuncelle } }
+            'bekci'  { Invoke-KilitliIslem { Invoke-Bekci } -Bekci }
         }
     } catch {
         Hata $_.Exception.Message

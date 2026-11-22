@@ -15,7 +15,7 @@ Türkiye için [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI) kurulum ve y
 | Kurulumdan sonra DNS sunucusu düşerse ya da ağ değişirse internet tamamen gidiyor | Bekçi görevi açılışta, 15 dakikada bir ve ağ değişiminde denetler: DNS'i değiştirir, profili yeniden bulur ya da hizmeti durdurur |
 | Engel listesi elle güncelleniyor | Liste günde bir kez bu depodan güncellenir (her satır doğrulanır) |
 | Klasör taşınınca hizmet bozuluyor | `C:\Program Files\GoodbyeDPI-TR` altına sabit kurulur |
-| Dosyaları silmek yetmiyor, WinDivert sürücüsü geride kalıyor | `kaldir` yalnız GoodbyeDPI-TR hizmetini ve dosyalarını siler; başka araçların kullanabileceği ortak WinDivert sürücüsünü korur |
+| Dosyaları silmek hizmeti kaldırmaz | `kaldir` hizmeti ve kendi kurulum kayıtlarını temizler. Paylaşılan WinDivert kaydı varsa kurulu `bin` klasörünü korur. |
 | Kaspersky/Avast çakışmaları elle bulunuyor | `doktor` komutu çakışan yazılımları, VPN'leri ve diğer DPI araçlarını listeler |
 | ZIP içinde ikili dosyalar dağıtılıyor | Resmi ValdikSS sürümü indirilir; zip ve içindeki her dosya SHA256 ile doğrulanır |
 | Kaldırmak için indirilen klasörü saklamak gerekiyor | Başlat menüsü kısayolu ve Programlar ve Özellikler kaydı eklenir |
@@ -32,6 +32,9 @@ Komut satırından (yönetici PowerShell):
 .\gdpi-tr.ps1 bul                   # çalışan profili ve DNS'i bul
 .\gdpi-tr.ps1 kur                   # hizmet olarak kur (ayar yoksa önce bulur)
 .\gdpi-tr.ps1 durum                 # hizmet, bekçi, profil ve erişim durumu
+.\gdpi-tr.ps1 durum -Json           # yönetici izni ve ağ testi olmadan yapılandırılmış durum
+.\gdpi-tr.ps1 duraklat              # yeniden başlatma sonrasında da duraklat
+.\gdpi-tr.ps1 devam                 # hizmeti yeniden etkinleştir
 .\gdpi-tr.ps1 liste-guncelle        # engelli alan adı listesini güncelle
 .\gdpi-tr.ps1 doktor                # sorun tarama
 .\gdpi-tr.ps1 rapor                 # gizlilik korumalı yerel JSON raporu
@@ -43,7 +46,15 @@ Komut satırından (yönetici PowerShell):
 
 Kurulumdan sonra indirdiğiniz klasörü silebilirsiniz; araç `C:\Program Files\GoodbyeDPI-TR` altında kalır ve Başlat menüsünden açılır.
 
-Liste dışında bir site eklemek için `listeler/kullanici.txt` dosyasına satır başına bir alan adı yazın, sonra yeniden kurun. Listeye eklenmesini istediğiniz engelli siteler için issue açabilirsiniz.
+Menüde **8** hizmeti duraklatır, **9** tekrar çalıştırır. Windows yeniden başlasa da duraklatma korunur ve bekçi denetimleri atlar.
+
+JSON ayarları kaydedilirken önceki geçerli nesne aynı klasörde `.bak` dosyasında saklanır. Ana dosya bozulursa yedek okunur ve uyarı gösterilir. Bir profili uygulamadan önce kurtarılan ayarları kontrol edin. Yedekleri asıl dosyayla aynı erişim izinleriyle koruyun.
+
+İlk kurulumdan önce özel alan adlarını, satır başına bir tane gelecek şekilde paketteki `listeler/kullanici.txt` dosyasına ekleyin. Uygulama zaten kuruluysa kurulum klasöründeki aynı dosyayı yönetici olarak düzenleyin, sonra yeniden kurun. Yeniden kurulum, kurulu kullanıcı listesini korur.
+
+Eski bir GoodbyeDPI hizmeti kuruluysa GoodbyeDPI-TR'yi kurmadan önce eski hizmeti kendi kaldırma aracıyla kaldırın. Ayrı bir GoodbyeDPI işlemi çalışıyorsa profil aramasından önce o işlemi kapatın.
+
+Kaldırma, paylaşılan WinDivert sürücüsünü ve eski sürümün ProgramData veri klasörünü korur. Windows hizmetin silinmesini bekletirse Hizmetler penceresini kapatın, gerekirse Windows'u yeniden başlatın ve kaldırmayı tekrar çalıştırın.
 
 ## Nasıl çalışır
 
@@ -88,7 +99,7 @@ Bu depodaki betikler MIT lisanslıdır. GoodbyeDPI Apache-2.0, WinDivert LGPL-3.
 
 ## Gizlilik korumalı teşhis raporu
 
-Menüden **8) Gizlilik korumalı teşhis raporu oluştur** seçeneğini veya PowerShell'den `./gdpi-tr.ps1 rapor` komutunu kullanın. Yönetici izni gerekmez. Kullanıcının geçici klasöründe `GoodbyeDPI-TR-rapor-*.json` dosyası oluşur.
+Menüden **10) Gizlilik korumalı teşhis raporu oluştur** seçeneğini veya PowerShell'den `./gdpi-tr.ps1 rapor` komutunu kullanın. Komut satırında yönetici izni gerekmez. Kullanıcının geçici klasöründe `GoodbyeDPI-TR-rapor-*.json` dosyası oluşur.
 
 Rapor sürüm, servis/bekçi durumu, profil adı, DNS sağlayıcı adı ve etkin alan adı sayısını içerir. **IP adresi, kullanıcı adı, tam dosya yolu, hedef alan adı, ham günlük veya hesap bilgisi içermez.** Herhangi bir sunucuya bilgi göndermez, bağlantı testi yapmaz ve servisleri değiştirmez. Paylaşmadan önce içeriği yine de inceleyin.
 

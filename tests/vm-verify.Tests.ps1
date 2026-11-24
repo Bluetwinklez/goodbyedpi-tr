@@ -1,4 +1,4 @@
-# Pester 3.4 / 4.10.1 uyumlu: Invoke-Pester .\tests
+﻿# Pester 3.4 / 4.10.1 uyumlu: Invoke-Pester .\tests
 . (Join-Path $PSScriptRoot '..\scripts\vm-verify.ps1')
 
 Describe 'Test-AclNesnesiGuvenli' {

@@ -25,6 +25,7 @@
     .\gdpi-tr.ps1 hiz -Kaydet     ölçümü kullanıcı klasörüne kaydet ve öncekiyle karşılaştır
     .\gdpi-tr.ps1 hiz -Gecmis     kayıtlı ölçümleri listele
     .\gdpi-tr.ps1 hiz -DnsSirala  DNS sunucu adaylarını gecikmeye göre sırala (hiçbir şeyi değiştirmez)
+    .\gdpi-tr.ps1 hiz -Oneriler   hızı sınırlayabilecek sistem ayarlarını listele (salt okunur)
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
 #>
@@ -41,7 +42,8 @@ param(
     [int]$Tekrar = 5,
     [switch]$Kaydet,
     [switch]$Gecmis,
-    [switch]$DnsSirala
+    [switch]$DnsSirala,
+    [switch]$Oneriler
 )
 
 $ErrorActionPreference = 'Stop'
@@ -1276,6 +1278,80 @@ function Test-SureGecti($Zaman, [TimeSpan]$Aralik) {
 
 # --- Komutlar -------------------------------------------------------------
 
+# --- Sistem önerileri (salt okunur) ---------------------------------------
+# Hiçbir sistem ayarı değiştirilmez; yalnızca hızı sınırlayabilecek olası nedenler listelenir.
+# Bir şey bulunmaması her şeyin yolunda olduğu anlamına gelmez.
+
+$Script:GucTasarrufuPlani = 'a1841308-3541-4fab-bc81-f71556f20b4a'
+$Script:TunelBagdastiriciDeseni = 'TAP-Windows|WireGuard|Wintun|OpenVPN|NordLynx|Tailscale|AnyConnect|ZeroTier|Hamachi|WARP|Fortinet|GlobalProtect'
+
+function Get-SistemDurumu {
+    # Toplanamayan her bilgi $null kalır; öneri üretilirken atlanır.
+    $d = [ordered]@{ FizikselAgBagdastiricilari = $null; TumAgBagdastiricilari = $null; GucPlaniGuid = $null; ProxyAcik = $null }
+    try { $d.FizikselAgBagdastiricilari = @(Get-NetAdapter -Physical -ErrorAction Stop) } catch { }
+    try { $d.TumAgBagdastiricilari = @(Get-NetAdapter -ErrorAction Stop) } catch { }
+    try {
+        $cikti = [string](& (Join-Path $Script:SistemDizini 'powercfg.exe') /getactivescheme 2>$null)
+        $m = [regex]::Match($cikti, '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
+        if ($m.Success) { $d.GucPlaniGuid = $m.Value.ToLowerInvariant() }
+    } catch { }
+    try {
+        $ayar = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
+        $d.ProxyAcik = [bool]($ayar.ProxyEnable -eq 1)
+    } catch { }
+    return [pscustomobject]$d
+}
+
+function Get-SistemOnerileri($Durum) {
+    $oneriler = New-Object 'System.Collections.Generic.List[object]'
+    $ekle = { param($Seviye, $Baslik, $Aciklama) $oneriler.Add([pscustomobject]@{ Seviye = $Seviye; Baslik = $Baslik; Aciklama = $Aciklama }) }
+    $acik = @($Durum.FizikselAgBagdastiricilari | Where-Object { $_ -and $_.Status -eq 'Up' })
+    foreach ($a in $acik) {
+        $mbps = $null
+        if ($a.Speed -is [ValueType] -and [double]$a.Speed -gt 0) { $mbps = [Math]::Round([double]$a.Speed / 1e6, 0) }
+        $kablolu = $a.MediaType -eq '802.3'
+        $kablosuz = $a.MediaType -match '802\.11'
+        if ($kablolu -and $null -ne $mbps -and $mbps -le 100) {
+            & $ekle 'oneri' "Ethernet $mbps Mbps'te bağlı ($($a.Name))" 'Hat hızınız bunun üzerindeyse bu bağlantı sınırlar. Kablo, priz, modem portu veya anahtar gigabit desteklemiyor ya da arızalı olabilir; başka kablo/port deneyin.'
+        }
+        if ($kablolu -and $a.FullDuplex -eq $false) {
+            & $ekle 'oneri' "Ethernet yarım dupleks çalışıyor ($($a.Name))" 'Genellikle kablo veya karşı cihazla otomatik uyumlama (auto-negotiation) sorunu göstergesidir.'
+        }
+        if ($kablosuz -and $null -ne $mbps -and $mbps -lt 100) {
+            & $ekle 'oneri' "Wi-Fi bağlantı hızı düşük: $mbps Mbps ($($a.Name))" 'Modeme yaklaşmak veya 5 GHz bandına geçmek, ayrıca kablo kullanmak bağlantı hızını artırabilir.'
+        }
+    }
+    if ($acik.Count -gt 1) {
+        $adlar = ($acik | ForEach-Object { $_.Name }) -join ', '
+        & $ekle 'bilgi' "Birden fazla fiziksel ağ bağdaştırıcısı açık: $adlar" 'Windows trafiği metriğe göre birine yönlendirir. Hız karşılaştırırken hangisinin kullanıldığını bilin.'
+    }
+    foreach ($t in @($Durum.TumAgBagdastiricilari | Where-Object { $_ -and $_.Status -eq 'Up' -and ($_.InterfaceDescription -match $Script:TunelBagdastiriciDeseni) })) {
+        & $ekle 'bilgi' "VPN/tünel bağdaştırıcısı etkin: $($t.InterfaceDescription)" 'Trafik başka bir yoldan geçiyorsa hız ve gecikme değişir; ölçümler bu yolu yansıtır.'
+    }
+    if ($Durum.GucPlaniGuid -eq $Script:GucTasarrufuPlani) {
+        & $ekle 'oneri' 'Güç planı "Güç tasarrufu"' 'Ağ bağdaştırıcısı ve işlemci performansını kısıtlayabilir; Dengeli veya Yüksek performans planı denenebilir.'
+    }
+    if ($Durum.ProxyAcik -eq $true) {
+        & $ekle 'bilgi' 'Sistem proxy ayarı açık' 'Tarayıcı ve birçok uygulama trafiği proxy üzerinden geçirir; curl tabanlı ölçümler proxy kullanmaz.'
+    }
+    # PowerShell 5.1'de @() ile List[object] dönüştürmek "Bağımsız değişken türleri eşleşmiyor" hatası verir.
+    return $oneriler.ToArray()
+}
+
+function Invoke-Oneriler {
+    Baslik 'Sistem önerileri (salt okunur)'
+    Yaz '  Hiçbir ayar değişmez. Bu liste olası nedenleri gösterir; kesin tanı değildir.' 'DarkGray'
+    $durum = Get-SistemDurumu
+    $oneriler = @(Get-SistemOnerileri $durum)
+    if ($null -eq $durum.FizikselAgBagdastiricilari) { Uyari 'Ağ bağdaştırıcıları okunamadı; bu kontroller atlandı.' }
+    foreach ($o in $oneriler) {
+        $satir = "$($o.Baslik): $($o.Aciklama)"
+        if ($o.Seviye -eq 'oneri') { Uyari $satir } else { Yaz "  [i] $satir" }
+    }
+    if ($oneriler.Count -eq 0) { Basari 'Hızı sınırlayabilecek belirgin bir sistem ayarı bulunamadı (bu her şeyin yolunda olduğunu garanti etmez).' }
+    return $oneriler
+}
+
 # --- Profil seçimi (ölçüme dayalı) ----------------------------------------
 
 # İlk çalışan profil bulunduktan sonra en çok bu kadar ek profil karşılaştırılır (süreyi sınırlamak için).
@@ -2290,10 +2366,12 @@ function Main {
             'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
             'hiz'    {
-                if (@($Kaydet, $Gecmis, $DnsSirala | Where-Object { $_ }).Count -gt 1) {
-                    throw '-Kaydet, -Gecmis ve -DnsSirala birlikte kullanılamaz.'
+                if (@($Kaydet, $Gecmis, $DnsSirala, $Oneriler | Where-Object { $_ }).Count -gt 1) {
+                    throw '-Kaydet, -Gecmis, -DnsSirala ve -Oneriler birlikte kullanılamaz.'
                 }
-                if ($DnsSirala) {
+                if ($Oneriler) {
+                    Invoke-Oneriler | Out-Null
+                } elseif ($DnsSirala) {
                     Invoke-DnsSiralamasi -Hedefler $Script:Hedefler | Out-Null
                 } elseif ($Gecmis) {
                     Invoke-OlcumGecmisi

@@ -33,6 +33,7 @@ Komut satırından (yönetici PowerShell):
 .\gdpi-tr.ps1 kur                   # hizmet olarak kur (ayar yoksa önce bulur)
 .\gdpi-tr.ps1 durum                 # hizmet, bekçi, profil ve erişim durumu
 .\gdpi-tr.ps1 durum -Json           # yönetici izni ve ağ testi olmadan yapılandırılmış durum
+.\gdpi-tr.ps1 hiz -Tekrar 5         # bağlantı aşamalarının sürelerini ölç (yönetici gerekmez, hiçbir şeyi değiştirmez)
 .\gdpi-tr.ps1 duraklat              # yeniden başlatma sonrasında da duraklat
 .\gdpi-tr.ps1 devam                 # hizmeti yeniden etkinleştir
 .\gdpi-tr.ps1 liste-guncelle        # engelli alan adı listesini güncelle
@@ -45,6 +46,8 @@ Komut satırından (yönetici PowerShell):
 ```
 
 Kurulumdan sonra indirdiğiniz klasörü silebilirsiniz; araç `C:\Program Files\GoodbyeDPI-TR` altında kalır ve Başlat menüsünden açılır.
+
+`hiz` bir hat hızı testi değildir ve bant genişliğinizi artırmaz. Her hedef için (varsayılan liste ve iki kontrol sitesi) `-Tekrar` kez HTTPS isteği atar; DNS, TCP, TLS, sunucu bekleme ve ilk bayt sürelerinin ortanca ve p90 değerlerini gösterir. Verim değeri yalnızca örnek yeterince büyükse görünür. 0 ms DNS süresi çoğunlukla sistem çözümleyicisinin önbellekten yanıt verdiği anlamına gelir. Komut bu sitelere doğrudan bağlanır ve hiçbir şey kaydetmez.
 
 Menüde **8** hizmeti duraklatır, **9** tekrar çalıştırır. Windows yeniden başlasa da duraklatma korunur ve bekçi denetimleri atlar.
 

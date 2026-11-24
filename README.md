@@ -21,6 +21,7 @@ The command names remain Turkish:
 .\gdpi-tr.ps1 hiz -DnsSirala  # Rank the DNS server candidates by latency (changes nothing)
 .\gdpi-tr.ps1 hiz -Oneriler   # List system settings that may limit speed (read-only)
 .\gdpi-tr.ps1 hiz -AB         # Compare the same targets with the service off and on (needs elevation)
+.\gdpi-tr.ps1 hiz -Indirme    # Opt-in download throughput test (up to 5 MB/run to NUL; optional -IndirmeUrl)
 .\gdpi-tr.ps1 duraklat        # Pause the service across reboots
 .\gdpi-tr.ps1 devam           # Resume the service
 .\gdpi-tr.ps1 liste-guncelle  # Refresh domain lists

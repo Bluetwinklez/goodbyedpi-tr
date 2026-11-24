@@ -27,6 +27,7 @@
     .\gdpi-tr.ps1 hiz -DnsSirala  DNS sunucu adaylarını gecikmeye göre sırala (hiçbir şeyi değiştirmez)
     .\gdpi-tr.ps1 hiz -Oneriler   hızı sınırlayabilecek sistem ayarlarını listele (salt okunur)
     .\gdpi-tr.ps1 hiz -AB         hizmet kapalı ve açıkken aynı hedefleri ölçüp farkı göster (yönetici gerekir)
+    .\gdpi-tr.ps1 hiz -Indirme    isteğe bağlı gerçek indirme verimi testi (örnek başına en çok 5 MB, diske yazmaz)
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
 #>
@@ -45,7 +46,9 @@ param(
     [switch]$Gecmis,
     [switch]$DnsSirala,
     [switch]$Oneriler,
-    [switch]$AB
+    [switch]$AB,
+    [switch]$Indirme,
+    [string[]]$IndirmeUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -99,6 +102,10 @@ $Script:KontrolSiteleri = @('www.google.com', 'www.turkiye.gov.tr')
 $Script:HizBicimi = '%{http_code}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}|%{size_download}'
 # Verim yalnızca yeterince büyük örnekte anlamlıdır; küçük sayfalarda bağlantı kurulumu baskın olur.
 $Script:HizVerimMinBayt = 65536
+# İsteğe bağlı gerçek indirme testi (yalnızca -Indirme verildiğinde kullanılır; diske yazmaz, NUL'a akar).
+$Script:IndirmeHedefleri = @('https://speed.cloudflare.com/__down?bytes=5242880')
+$Script:IndirmeEnFazlaBayt = 5242880
+$Script:IndirmeSureSn = 20
 # Ölçüm geçmişi kullanıcıya özeldir (hiz yönetici gerektirmez). Bekçi bu dosyayı okumaz: SYSTEM hesabı
 # kullanıcı tarafından yazılabilen veriye güvenmemeli.
 $Script:OlcumDosyasi = $null
@@ -938,6 +945,125 @@ function Invoke-HizAb {
         Acik            = $acikOzetler
         Farklar         = $farklar
     }
+}
+
+function Test-IndirmeUrl([string]$Url) {
+    if (-not $Url -or $Url.Length -gt 512) { return $false }
+    if ($Url.StartsWith('-') -or $Url -match '[\s\p{C}]') { return $false }
+    $uri = $null
+    if (-not [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri)) { return $false }
+    if ($uri.Scheme -ne 'https') { return $false }
+    if (-not (Test-AlanAdi $uri.Host)) { return $false }
+    return $true
+}
+
+function Get-IndirmeOlcumuSonucu([string]$Url, [string]$Cikti, [int]$CikisKodu) {
+    $parcalar = @(([string]$Cikti).Trim() -split '\|')
+    $http = if ($parcalar.Count -ge 1) { $parcalar[0] } else { '000' }
+    $sureMs = if ($parcalar.Count -eq 8) { ConvertTo-Milisaniye $parcalar[5] } else { $null }
+    $hiz = 0.0; $bayt = 0.0
+    $hizTamam = $parcalar.Count -eq 8 -and [double]::TryParse($parcalar[6], [Globalization.NumberStyles]::Float,
+        [Globalization.CultureInfo]::InvariantCulture, [ref]$hiz) -and $hiz -gt 0
+    $baytTamam = $parcalar.Count -eq 8 -and [double]::TryParse($parcalar[7], [Globalization.NumberStyles]::Float,
+        [Globalization.CultureInfo]::InvariantCulture, [ref]$bayt) -and $bayt -ge 0
+
+    $basarili = $false
+    $aciklama = 'İndirme başarısız'
+    if ($CikisKodu -ne 0) {
+        $aciklama = "curl hatası (çıkış $CikisKodu)"
+    } elseif ($http -notin @('200', '206')) {
+        $aciklama = "Beklenmeyen HTTP kodu: $http"
+    } elseif (-not $baytTamam -or $bayt -lt $Script:HizVerimMinBayt) {
+        $aciklama = 'İndirilen örnek verim ölçümü için çok küçük'
+    } elseif (-not $hizTamam) {
+        $aciklama = 'İndirme hızı okunamadı'
+    } else {
+        $basarili = $true
+        $aciklama = 'Tamam'
+    }
+
+    return [pscustomobject]@{
+        Url       = $Url
+        Basarili  = $basarili
+        HttpKodu  = $http
+        CikisKodu = $CikisKodu
+        Bayt      = if ($baytTamam) { [Math]::Round($bayt, 0) } else { $null }
+        SureMs    = $sureMs
+        VerimBps   = if ($basarili) { [Math]::Round($hiz, 0) } else { $null }
+        Mbps       = if ($basarili) { [Math]::Round(($hiz * 8.0) / 1000000.0, 2) } else { $null }
+        MegabaytSn = if ($basarili) { [Math]::Round($hiz / 1MB, 2) } else { $null }
+        Aciklama   = $aciklama
+    }
+}
+
+function Invoke-IndirmeOlcumu([string]$Url, [int]$Sure = $Script:IndirmeSureSn, [int]$EnFazlaBayt = $Script:IndirmeEnFazlaBayt) {
+    if (-not (Test-IndirmeUrl $Url)) {
+        throw "Geçersiz indirme adresi (yalnızca geçerli https:// URL kabul edilir): $Url"
+    }
+    $curl = Get-Curl
+    if (-not $curl) { throw 'Windows curl.exe bulunamadı (Windows 10 1803+ gerekir).' }
+    $sonBayt = [Math]::Max(0, $EnFazlaBayt - 1)
+    $arg = @('--disable', '-s', '-L', '-o', 'NUL', '-w', $Script:HizBicimi,
+        '--connect-timeout', '5', '-m', "$Sure", '--range', "0-$sonBayt", $Url)
+    $cikti = & $curl @arg 2>$null
+    return Get-IndirmeOlcumuSonucu $Url ([string]$cikti) $LASTEXITCODE
+}
+
+function Get-IndirmeOzeti([string]$Url, $Olcumler) {
+    $olcumler = @($Olcumler)
+    $basarili = @($olcumler | Where-Object { $_.Basarili })
+    $deger = { param($ad) @($basarili | Where-Object { $null -ne $_.$ad } | ForEach-Object { [double]$_.$ad }) }
+    return [pscustomobject]@{
+        Url      = $Url
+        Deneme   = $olcumler.Count
+        Basarili = $basarili.Count
+        Mbps       = Get-Istatistik (& $deger 'Mbps')
+        MegabaytSn = Get-Istatistik (& $deger 'MegabaytSn')
+        Bayt       = Get-Istatistik (& $deger 'Bayt')
+        Hatalar  = @($olcumler | Where-Object { -not $_.Basarili } | Select-Object -ExpandProperty Aciklama -Unique)
+    }
+}
+
+function Format-IndirmeOzeti($Ozet) {
+    $parca = New-Object 'System.Collections.Generic.List[string]'
+    if ($Ozet.Mbps -and $Ozet.MegabaytSn) {
+        $parca.Add(('ortanca {0:N2} Mbps ({1:N2} MB/s, p90 {2:N2} Mbps)' -f $Ozet.Mbps.Ortanca, $Ozet.MegabaytSn.Ortanca, $Ozet.Mbps.P90))
+    }
+    if ($Ozet.Bayt) {
+        $parca.Add(('{0:N2} MB' -f ($Ozet.Bayt.Ortanca / 1MB)))
+    }
+    return ('{0}: {1}/{2} başarılı' -f $Ozet.Url, $Ozet.Basarili, $Ozet.Deneme) +
+        $(if ($parca.Count) { ' | ' + ($parca -join ' | ') } else { '' })
+}
+
+function Invoke-IndirmeHiz {
+    param([string[]]$Adresler, [int]$Tekrar = 3)
+    $liste = @($Adresler | Where-Object { $_ } | Select-Object -Unique)
+    if ($liste.Count -eq 0) { $liste = @($Script:IndirmeHedefleri) }
+    foreach ($u in $liste) {
+        if (-not (Test-IndirmeUrl $u)) {
+            throw "Geçersiz indirme adresi (yalnızca geçerli https:// URL kabul edilir): $u"
+        }
+    }
+    Baslik 'İsteğe bağlı indirme verimi testi'
+    $mbSinir = [Math]::Round($Script:IndirmeEnFazlaBayt / 1MB, 1)
+    Yaz "  Her adres $Tekrar kez ölçülür (deneme başına en çok $mbSinir MB, diske yazılmaz, hiçbir ayar değişmez)." 'DarkGray'
+    Yaz "  Hedef adresler: $($liste -join ', ')" 'DarkGray'
+    $ozetler = @()
+    foreach ($u in $liste) {
+        $olcumler = @()
+        for ($i = 0; $i -lt $Tekrar; $i++) {
+            if ($i -gt 0) { Start-Sleep -Milliseconds 300 }
+            $olcumler += Invoke-IndirmeOlcumu $u
+        }
+        $ozet = Get-IndirmeOzeti $u $olcumler
+        $ozetler += $ozet
+        $satir = Format-IndirmeOzeti $ozet
+        if ($ozet.Basarili -eq $ozet.Deneme) { Basari $satir }
+        elseif ($ozet.Basarili -gt 0) { Uyari $satir } else { Hata $satir }
+        foreach ($hata in $ozet.Hatalar) { Yaz "      $hata" 'DarkGray' }
+    }
+    return $ozetler
 }
 
 # --- Ölçüm geçmişi --------------------------------------------------------
@@ -2520,10 +2646,15 @@ function Main {
             'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
             'hiz'    {
-                if (@($Kaydet, $Gecmis, $DnsSirala, $Oneriler, $AB | Where-Object { $_ }).Count -gt 1) {
-                    throw '-Kaydet, -Gecmis, -DnsSirala, -Oneriler ve -AB birlikte kullanılamaz.'
+                if (@($Kaydet, $Gecmis, $DnsSirala, $Oneriler, $AB, $Indirme | Where-Object { $_ }).Count -gt 1) {
+                    throw '-Kaydet, -Gecmis, -DnsSirala, -Oneriler, -AB ve -Indirme birlikte kullanılamaz.'
                 }
-                if ($AB) {
+                if ($IndirmeUrl -and -not $Indirme) {
+                    throw '-IndirmeUrl yalnızca -Indirme ile birlikte kullanılabilir.'
+                }
+                if ($Indirme) {
+                    Invoke-IndirmeHiz -Adresler $IndirmeUrl -Tekrar $Tekrar | Out-Null
+                } elseif ($AB) {
                     Invoke-KilitliIslem { Invoke-HizAb -Hedefler $Script:Hedefler -Tekrar $Tekrar | Out-Null }
                 } elseif ($Oneriler) {
                     Invoke-Oneriler | Out-Null

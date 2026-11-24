@@ -1694,3 +1694,51 @@ Describe 'hiz -AB' {
         Assert-MockCalled Stop-Hizmet -Times 1 -Exactly -Scope It
     }
 }
+
+Describe 'hiz -Indirme' {
+    It 'Test-IndirmeUrl yalnızca geçerli https URL adreslerini kabul eder' {
+        Test-IndirmeUrl 'https://speed.cloudflare.com/__down?bytes=5242880' | Should Be $true
+        Test-IndirmeUrl 'http://speed.cloudflare.com/__down' | Should Be $false
+        Test-IndirmeUrl 'file:///C:/Windows/win.ini' | Should Be $false
+        Test-IndirmeUrl 'https://example.com/a --insecure' | Should Be $false
+        Test-IndirmeUrl '-https://example.com' | Should Be $false
+    }
+
+    It 'Get-IndirmeOlcumuSonucu geçerli 206 yanıtında Mbps ve MBps hesaplar' {
+        $cikti = '206|0.010|0.020|0.050|0.080|1.000|5000000|5242880'
+        $s = Get-IndirmeOlcumuSonucu 'https://example.com/test.bin' $cikti 0
+        $s.Basarili | Should Be $true
+        $s.Mbps | Should Be 40
+        $s.MegabaytSn | Should Be 4.77
+        $s.Bayt | Should Be 5242880
+    }
+
+    It 'Get-IndirmeOlcumuSonucu çok küçük örneği veya HTTP hatasını başarısız sayar' {
+        $kucuk = Get-IndirmeOlcumuSonucu 'https://example.com/test.bin' '200|0.01|0.02|0.04|0.05|0.06|50000|1024' 0
+        $kucuk.Basarili | Should Be $false
+        $hata = Get-IndirmeOlcumuSonucu 'https://example.com/test.bin' '403|0.01|0.02|0.04|0.05|0.06|50000|5242880' 0
+        $hata.Basarili | Should Be $false
+    }
+
+    It 'Invoke-IndirmeHiz geçersiz URL verildiğinde curl çalıştırmadan reddeder' {
+        Mock Invoke-IndirmeOlcumu { throw 'Çalışmamalı.' }
+        { Invoke-IndirmeHiz -Adresler @('http://example.com/a') -Tekrar 2 } | Should Throw 'Geçersiz indirme adresi'
+        Assert-MockCalled Invoke-IndirmeOlcumu -Times 0 -Exactly -Scope It
+    }
+
+    It 'Invoke-IndirmeHiz birden çok tekrarı özetler ve ortanca hızı biçimlendirir' {
+        Mock Yaz { }
+        Mock Start-Sleep { }
+        Mock Invoke-IndirmeOlcumu {
+            [pscustomobject]@{
+                Url = $Url; Basarili = $true; HttpKodu = '206'; CikisKodu = 0
+                Bayt = 5242880; SureMs = 1000; VerimBps = 5000000; Mbps = 40.0; MegabaytSn = 4.77; Aciklama = 'Tamam'
+            }
+        }
+        $ozet = @(Invoke-IndirmeHiz -Adresler @('https://example.com/dosya.bin') -Tekrar 2)
+        $ozet.Count | Should Be 1
+        $ozet[0].Basarili | Should Be 2
+        $ozet[0].Mbps.Ortanca | Should Be 40
+        (Format-IndirmeOzeti $ozet[0]) | Should Match '40[.,]00 Mbps'
+    }
+}

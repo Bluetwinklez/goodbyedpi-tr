@@ -22,6 +22,8 @@
     .\gdpi-tr.ps1 rapor           özel bilgileri içermeyen yerel teşhis JSON'u üret
     .\gdpi-tr.ps1 test            hedef siteleri test et
     .\gdpi-tr.ps1 hiz [-Tekrar N] bağlantı aşamalarının sürelerini ölç (yönetici gerekmez)
+    .\gdpi-tr.ps1 hiz -Kaydet     ölçümü kullanıcı klasörüne kaydet ve öncekiyle karşılaştır
+    .\gdpi-tr.ps1 hiz -Gecmis     kayıtlı ölçümleri listele
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
 #>
@@ -35,7 +37,9 @@ param(
     [string[]]$Hedef,
     [switch]$Json,
     [ValidateRange(1, 20)]
-    [int]$Tekrar = 5
+    [int]$Tekrar = 5,
+    [switch]$Kaydet,
+    [switch]$Gecmis
 )
 
 $ErrorActionPreference = 'Stop'
@@ -89,6 +93,15 @@ $Script:KontrolSiteleri = @('www.google.com', 'www.turkiye.gov.tr')
 $Script:HizBicimi = '%{http_code}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}|%{size_download}'
 # Verim yalnızca yeterince büyük örnekte anlamlıdır; küçük sayfalarda bağlantı kurulumu baskın olur.
 $Script:HizVerimMinBayt = 65536
+# Ölçüm geçmişi kullanıcıya özeldir (hiz yönetici gerektirmez). Bekçi bu dosyayı okumaz: SYSTEM hesabı
+# kullanıcı tarafından yazılabilen veriye güvenmemeli.
+$Script:OlcumDosyasi = $null
+if ($env:LOCALAPPDATA) { $Script:OlcumDosyasi = Join-Path $env:LOCALAPPDATA 'GoodbyeDPI-TR\olcumler.json' }
+$Script:OlcumSemaSurumu = 1
+$Script:OlcumEnFazlaKayit = 50
+# Karşılaştırmada değişim hem bu kadar ms hem bu kadar yüzde aşılmadıkça "belirgin" sayılmaz.
+$Script:OlcumBelirginMs = 30
+$Script:OlcumBelirginYuzde = 20
 
 # Güvenliden riskliye sıralı. --set-ttl içerenler siteleri bozabildiği için sonda.
 $Script:Profiller = @(
@@ -559,17 +572,22 @@ function Get-HizOlcumuSonucu([string]$Alan, [string]$Cikti, [int]$CikisKodu) {
         $baytTamam = [double]::TryParse($parcalar[7], [Globalization.NumberStyles]::Float,
             [Globalization.CultureInfo]::InvariantCulture, [ref]$bayt) -and $bayt -ge 0
         # Süreler başlangıçtan itibaren birikimlidir; aşama süresi iki ölçümün farkıdır.
-        # IP hedefinde DNS ve TLS yoksa curl 0 verir.
-        if ($null -ne $dns -and $null -ne $tcp -and $null -ne $ilk -and $null -ne $top -and
-            $tcp -ge $dns -and $ilk -ge $tcp) {
+        # IP hedefinde DNS ve TLS yoksa curl 0 verir. Sayı olmayan değerler veya imkânsız sıralar
+        # (ilk bayt bağlantıdan önce, toplam ilk bayttan önce) bütün süreleri geçersiz kılar.
+        $tlsVar = $null -ne $tls -and $tls -gt 0
+        $gecerli = $null -ne $dns -and $null -ne $tcp -and $null -ne $tls -and $null -ne $ilk -and $null -ne $top -and
+            $ilk -ge $tcp -and $top -ge $ilk -and $dns -le $ilk -and (-not $tlsVar -or ($tls -ge $tcp -and $tls -le $ilk))
+        if ($gecerli) {
             $sonuc.DnsMs = $dns
-            $sonuc.TcpMs = [Math]::Round($tcp - $dns, 1)
+            # Windows curl'de çözümleyici bağlantı başladıktan sonra yanıt verebilir (connect < namelookup).
+            # O zaman TCP aşaması ayrı hesaplanamaz; diğer süreler geçerli kalır.
+            if ($tcp -ge $dns) { $sonuc.TcpMs = [Math]::Round($tcp - $dns, 1) }
             $onceki = $tcp
-            if ($null -ne $tls -and $tls -ge $tcp -and $tls -gt 0) {
+            if ($tlsVar) {
                 $sonuc.TlsMs = [Math]::Round($tls - $tcp, 1)
                 $onceki = $tls
             }
-            if ($ilk -ge $onceki) { $sonuc.SunucuMs = [Math]::Round($ilk - $onceki, 1) }
+            $sonuc.SunucuMs = [Math]::Round($ilk - $onceki, 1)
             $sonuc.IlkBaytMs = $ilk
             $sonuc.ToplamMs = $top
         }
@@ -642,6 +660,8 @@ function Format-HizOzeti($Ozet) {
     if ($Ozet.Verim -and $Ozet.Bayt -and $Ozet.Bayt.Ortanca -ge $Script:HizVerimMinBayt) {
         $parca.Add(('örnek verimi {0:N2} MB/s' -f ($Ozet.Verim.Ortanca / 1MB)))
     }
+    # Hedef açılıyor ama hiç süre çıkarılamadıysa bunu sessizce atlama; kullanıcı bilsin.
+    if ($Ozet.Basarili -gt 0 -and -not $Ozet.IlkBayt) { $parca.Add('süre okunamadı') }
     return ('{0}: {1}/{2} başarılı' -f $Ozet.Alan, $Ozet.Basarili, $Ozet.Deneme) +
         $(if ($parca.Count) { ' | ' + ($parca -join ' | ') } else { '' })
 }
@@ -667,6 +687,174 @@ function Invoke-Hiz {
         foreach ($hata in $ozet.Hatalar) { Yaz "      $($hata.Say) başarısız: $($hata.Durum)" 'DarkGray' }
     }
     return $ozetler
+}
+
+# --- Ölçüm geçmişi --------------------------------------------------------
+
+function Get-OrtancaDegeri($Istatistik) {
+    if ($Istatistik) { return $Istatistik.Ortanca }
+    return $null
+}
+
+function ConvertTo-OlcumKaydi($Ozetler, [int]$Tekrar) {
+    # Yalnızca sayısal özetler ve bağlam saklanır: ham curl çıktısı, IP veya yol yok.
+    $hizmet = 'Unknown'
+    try {
+        $bilgi = Get-GdpiHizmetBilgisi
+        $hizmet = if ($bilgi) { [string]$bilgi.State } else { 'NotInstalled' }
+    } catch { }
+    $profil = $null
+    try {
+        $ayar = Read-Ayarlar
+        if ($ayar -and $ayar.profil -is [string]) { $profil = $ayar.profil }
+    } catch { }
+    $hedefler = @(foreach ($o in @($Ozetler)) {
+        $verim = $null
+        if ($o.Verim -and $o.Bayt -and $o.Bayt.Ortanca -ge $Script:HizVerimMinBayt) { $verim = $o.Verim.Ortanca }
+        [pscustomobject]@{
+            Alan = $o.Alan
+            Deneme = $o.Deneme
+            Basarili = $o.Basarili
+            DnsMs = Get-OrtancaDegeri $o.Dns
+            TcpMs = Get-OrtancaDegeri $o.Tcp
+            TlsMs = Get-OrtancaDegeri $o.Tls
+            SunucuMs = Get-OrtancaDegeri $o.Sunucu
+            IlkBaytMs = Get-OrtancaDegeri $o.IlkBayt
+            IlkBaytP90Ms = $(if ($o.IlkBayt) { $o.IlkBayt.P90 } else { $null })
+            VerimBps = $verim
+        }
+    })
+    return [pscustomobject]@{
+        Zaman = (Get-Date).ToUniversalTime().ToString('o')
+        Tekrar = $Tekrar
+        Hizmet = $hizmet
+        Profil = $profil
+        Hedefler = $hedefler
+    }
+}
+
+function Test-OlcumKaydi($Kayit) {
+    if ($null -eq $Kayit -or $Kayit -is [string] -or $null -eq (ConvertTo-BekciZamani $Kayit.Zaman)) { return $false }
+    if ($null -eq $Kayit.Hedefler) { return $false }
+    foreach ($h in @($Kayit.Hedefler)) {
+        if ($null -eq $h -or $h.Alan -isnot [string] -or $h.Alan.Length -gt 253) { return $false }
+        if ($h.Deneme -isnot [int] -and $h.Deneme -isnot [long]) { return $false }
+        if ($h.Basarili -isnot [int] -and $h.Basarili -isnot [long]) { return $false }
+    }
+    return $true
+}
+
+function Read-OlcumGecmisi([System.Collections.Generic.List[string]]$Uyarilar) {
+    if (-not $Script:OlcumDosyasi) { throw 'Kullanıcı veri klasörü (LOCALAPPDATA) bulunamadı.' }
+    try {
+        $dosya = Read-Json $Script:OlcumDosyasi $Uyarilar
+    } catch {
+        throw "Ölçüm geçmişi okunamadı ($Script:OlcumDosyasi). Dosyayı kontrol edin veya silip yeniden ölçün. Ayrıntı: $($_.Exception.Message)"
+    }
+    if ($null -eq $dosya) { return @() }
+    if ($dosya.SemaSurumu -ne $Script:OlcumSemaSurumu) {
+        throw "Ölçüm geçmişi şema sürümü desteklenmiyor: $($dosya.SemaSurumu)"
+    }
+    $kayitlar = @()
+    if ($null -ne $dosya.Kayitlar) { $kayitlar = @($dosya.Kayitlar) }
+    $gecerli = @($kayitlar | Where-Object { Test-OlcumKaydi $_ })
+    if ($gecerli.Count -lt $kayitlar.Count) {
+        $mesaj = "Geçersiz $($kayitlar.Count - $gecerli.Count) ölçüm kaydı atlandı."
+        if ($null -ne $Uyarilar) { $Uyarilar.Add($mesaj) } else { Uyari $mesaj }
+    }
+    return @($gecerli | Sort-Object { ConvertTo-BekciZamani $_.Zaman })
+}
+
+function Add-OlcumKaydi($Kayit) {
+    $yeni = @(@(Read-OlcumGecmisi) + $Kayit)
+    if ($yeni.Count -gt $Script:OlcumEnFazlaKayit) {
+        $yeni = @($yeni[($yeni.Count - $Script:OlcumEnFazlaKayit)..($yeni.Count - 1)])
+    }
+    Save-Json ([pscustomobject]@{ SemaSurumu = $Script:OlcumSemaSurumu; Kayitlar = $yeni }) $Script:OlcumDosyasi
+}
+
+function Compare-OlcumKayitlari($Onceki, $Simdi) {
+    # Aynı hedefin önceki ve şimdiki ortanca ilk bayt süresini karşılaştırır. Küçük farklar gürültü sayılır.
+    foreach ($h in @($Simdi.Hedefler)) {
+        $e = @($Onceki.Hedefler | Where-Object { $_.Alan -eq $h.Alan }) | Select-Object -First 1
+        if (-not $e) { continue }
+        $sonuc = 'karsilastirilamadi'
+        $fark = $null
+        $yuzde = $null
+        if ($null -ne $e.IlkBaytMs -and $null -ne $h.IlkBaytMs -and [double]$e.IlkBaytMs -gt 0) {
+            $fark = [Math]::Round([double]$h.IlkBaytMs - [double]$e.IlkBaytMs, 1)
+            $yuzde = [Math]::Round($fark / [double]$e.IlkBaytMs * 100, 0)
+            if ([Math]::Abs($fark) -ge $Script:OlcumBelirginMs -and [Math]::Abs($yuzde) -ge $Script:OlcumBelirginYuzde) {
+                $sonuc = if ($fark -lt 0) { 'daha-hizli' } else { 'daha-yavas' }
+            } else {
+                $sonuc = 'belirgin-degil'
+            }
+        }
+        [pscustomobject]@{
+            Alan = $h.Alan
+            OncekiMs = $e.IlkBaytMs
+            SimdiMs = $h.IlkBaytMs
+            FarkMs = $fark
+            Yuzde = $yuzde
+            Sonuc = $sonuc
+            OncekiBasari = "$($e.Basarili)/$($e.Deneme)"
+            SimdiBasari = "$($h.Basarili)/$($h.Deneme)"
+        }
+    }
+}
+
+function Format-OlcumFarki($Fark) {
+    $basari = ''
+    if ($Fark.OncekiBasari -ne $Fark.SimdiBasari) { $basari = " | başarı $($Fark.OncekiBasari) -> $($Fark.SimdiBasari)" }
+    switch ($Fark.Sonuc) {
+        'karsilastirilamadi' { return "$($Fark.Alan): karşılaştırılamadı (süre eksik)$basari" }
+        default {
+            $metin = '{0}: ilk bayt {1:N0} -> {2:N0} ms ({3:+0;-0;0}%' -f $Fark.Alan, $Fark.OncekiMs, $Fark.SimdiMs, $Fark.Yuzde
+            switch ($Fark.Sonuc) {
+                'daha-hizli' { $metin += ', daha hızlı)' }
+                'daha-yavas' { $metin += ', daha yavaş)' }
+                default { $metin += ', fark küçük; ölçüm gürültüsü olabilir)' }
+            }
+            return $metin + $basari
+        }
+    }
+}
+
+function Save-HizOlcumu($Ozetler, [int]$Tekrar) {
+    $kayit = ConvertTo-OlcumKaydi $Ozetler $Tekrar
+    if (@($kayit.Hedefler | Where-Object { $_.Basarili -gt 0 }).Count -eq 0) {
+        Uyari 'Hiçbir hedef ölçülemedi; kayıt eklenmedi.'
+        return $false
+    }
+    $onceki = @(Read-OlcumGecmisi) | Select-Object -Last 1
+    if ($onceki) {
+        $zaman = (ConvertTo-BekciZamani $onceki.Zaman).ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+        Baslik "Önceki ölçümle karşılaştırma ($zaman)"
+        if ($onceki.Hizmet -ne $kayit.Hizmet -or $onceki.Profil -ne $kayit.Profil) {
+            Yaz "  Bağlam değişti: hizmet $($onceki.Hizmet) -> $($kayit.Hizmet), profil $($onceki.Profil) -> $($kayit.Profil)" 'Cyan'
+        }
+        foreach ($f in @(Compare-OlcumKayitlari $onceki $kayit)) {
+            $satir = Format-OlcumFarki $f
+            if ($f.Sonuc -eq 'daha-hizli') { Basari $satir } elseif ($f.Sonuc -eq 'daha-yavas') { Uyari $satir } else { Yaz "  $satir" }
+        }
+    }
+    Add-OlcumKaydi $kayit
+    Basari "Ölçüm kaydedildi: $Script:OlcumDosyasi"
+    return $true
+}
+
+function Invoke-OlcumGecmisi {
+    Baslik 'Ölçüm geçmişi'
+    $kayitlar = @(Read-OlcumGecmisi)
+    if ($kayitlar.Count -eq 0) { Yaz '  Kayıtlı ölçüm yok. "hiz -Kaydet" ile ekleyebilirsiniz.'; return }
+    foreach ($k in @($kayitlar | Select-Object -Last 10)) {
+        $zaman = (ConvertTo-BekciZamani $k.Zaman).ToLocalTime().ToString('yyyy-MM-dd HH:mm')
+        Yaz ("  {0} | hizmet {1} | profil {2} | tekrar {3}" -f $zaman, $k.Hizmet, $(if ($k.Profil) { $k.Profil } else { '-' }), $k.Tekrar) 'Cyan'
+        foreach ($h in @($k.Hedefler)) {
+            $ms = if ($null -ne $h.IlkBaytMs) { '{0:N0} ms' -f $h.IlkBaytMs } else { '-' }
+            Yaz "      $($h.Alan): ilk bayt $ms ($($h.Basarili)/$($h.Deneme) başarılı)"
+        }
+    }
 }
 
 function Test-Internet {
@@ -1451,6 +1639,7 @@ function Get-DurumOzeti {
         Profil = $null
         Genel = $null
         AyarOkundu = $false
+        SonOlcum = $null
         Uyarilar = @()
         Hatalar = @()
     }
@@ -1478,6 +1667,12 @@ function Get-DurumOzeti {
         }
     } catch {
         $sonuc.Hatalar += 'Kaydedilmiş ayarlar okunamadı veya doğrulanamadı.'
+    }
+    try {
+        $olcumler = @(Read-OlcumGecmisi $uyarilar)
+        if ($olcumler.Count -gt 0) { $sonuc.SonOlcum = $olcumler[$olcumler.Count - 1] }
+    } catch {
+        $sonuc.Hatalar += 'Ölçüm geçmişi okunamadı.'
     }
     $sonuc.Uyarilar = @($uyarilar.ToArray())
     return [pscustomobject]$sonuc
@@ -1916,7 +2111,15 @@ function Main {
             'doktor' { Invoke-Doktor }
             'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
-            'hiz'    { Invoke-Hiz -Hedefler $Script:Hedefler -Tekrar $Tekrar | Out-Null }
+            'hiz'    {
+                if ($Kaydet -and $Gecmis) { throw '-Kaydet ve -Gecmis birlikte kullanılamaz.' }
+                if ($Gecmis) {
+                    Invoke-OlcumGecmisi
+                } else {
+                    $ozetler = Invoke-Hiz -Hedefler $Script:Hedefler -Tekrar $Tekrar
+                    if ($Kaydet) { Save-HizOlcumu $ozetler $Tekrar | Out-Null }
+                }
+            }
             'liste-guncelle' { Invoke-KilitliIslem { Invoke-ListeGuncelle } }
             'bekci'  { Invoke-KilitliIslem { Invoke-Bekci } -Bekci }
         }

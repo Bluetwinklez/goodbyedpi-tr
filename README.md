@@ -1,91 +1,137 @@
 # GoodbyeDPI-TR
 
-A Windows installation and management wrapper for [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI), intended for Turkish network conditions. It selects connection profiles, manages the Windows service and checks connectivity after changes.
+[![CI](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/ci.yml/badge.svg)](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/ci.yml)
+[![Secret scanning](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/secret-scan.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-This is not a VPN: it does not encrypt traffic or hide your IP address. Results depend on the ISP, destination and network configuration.
+> **[Türkçe Kılavuz (README.tr.md)](README.tr.md)** · **[Changelog](CHANGELOG.md)** · **[Security Policy](SECURITY.md)** · **[VM Test Checklist](docs/VM_TEST_CHECKLIST.md)**
 
-## Install and use
+A Windows installation, diagnostics, and service manager for [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI), designed for Turkish network conditions. It scopes DPI handling to listed domains, benchmarks DNS servers and safe profiles, runs a self-healing watchdog, and rolls back automatically on failure.
 
-Download a ZIP from [Releases](https://github.com/Bluetwinklez/goodbyedpi-tr/releases), extract it and open `GoodbyeDPI-TR.cmd`. Installation requires administrator privileges because it changes a system service and network settings.
+> **Not a VPN:** GoodbyeDPI-TR does not encrypt traffic or hide your IP address. It only addresses DNS and SNI-based filtering; it cannot bypass IP-based blocks. Results depend on your ISP, target site, and network setup.
 
-The command names remain Turkish:
+---
 
-```powershell
-.\gdpi-tr.ps1 bul             # Find a working profile and DNS server
-.\gdpi-tr.ps1 kur             # Install the service
-.\gdpi-tr.ps1 durum           # Show current state
-.\gdpi-tr.ps1 durum -Json     # Read structured status without elevation or network tests
-.\gdpi-tr.ps1 hiz -Tekrar 5   # Measure connection stage timings (no elevation, changes nothing)
-.\gdpi-tr.ps1 hiz -Kaydet     # ...and save the result, comparing it with the previous saved run
-.\gdpi-tr.ps1 hiz -Gecmis     # List saved measurements
-.\gdpi-tr.ps1 hiz -DnsSirala  # Rank the DNS server candidates by latency (changes nothing)
-.\gdpi-tr.ps1 hiz -Oneriler   # List system settings that may limit speed (read-only)
-.\gdpi-tr.ps1 hiz -AB         # Compare the same targets with the service off and on (needs elevation)
-.\gdpi-tr.ps1 hiz -Indirme    # Opt-in download throughput test (up to 5 MB/run to NUL; optional -IndirmeUrl)
-.\gdpi-tr.ps1 alan-listele    # List custom domains in kullanici.txt (no elevation; supports -Json)
-.\gdpi-tr.ps1 alan-ekle -Hedef example.com  # Add a custom domain and refresh the active list
-.\gdpi-tr.ps1 alan-sil -Hedef example.com   # Remove a custom domain and refresh the active list
-.\gdpi-tr.ps1 duraklat        # Pause the service across reboots
-.\gdpi-tr.ps1 devam           # Resume the service
-.\gdpi-tr.ps1 liste-guncelle  # Refresh domain lists
-.\gdpi-tr.ps1 doktor          # Diagnose conflicts
-.\gdpi-tr.ps1 kaldir          # Remove the service and installed files
-```
+## Quick Start
 
-By default, processing is limited to listed domains. Before the first installation, add custom domains one per line in `listeler/kullanici.txt`. For an existing installation, edit the copy under the installation directory as administrator, then reinstall. Reinstalling preserves that installed copy. Avoid the broad `-Genel` option unless you understand its effect on unrelated traffic.
+1. Download the latest release ZIP and `.zip.sha256` from [Releases](https://github.com/Bluetwinklez/goodbyedpi-tr/releases).
+2. Verify the archive hash in PowerShell:
+   ```powershell
+   Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip
+   Get-Content .\GoodbyeDPI-TR-vX.Y.Z.zip.sha256
+   ```
+3. Extract the archive and double-click **`GoodbyeDPI-TR.cmd`** (requests administrator elevation).
+4. Choose **1) Find working settings and install** from the menu.
 
-If an older GoodbyeDPI service is installed, remove it using its own uninstaller before installing GoodbyeDPI-TR. If a separate GoodbyeDPI process is running, close it before running profile detection.
+After installation, the tool lives under `C:\Program Files\GoodbyeDPI-TR` with a Start Menu shortcut and an entry in Apps & Features; you can delete the extracted download folder.
 
-## Operation and recovery
+---
 
-The installer downloads upstream binaries and verifies their hashes. A scheduled watchdog checks connectivity, attempts supported recovery and stops the service if it disrupts general access. Configuration and logs are under `C:\Program Files\GoodbyeDPI-TR\veri`. The installation directory is restricted to administrators.
+## Commands
 
-`hiz` is not a line-speed test and cannot raise your bandwidth. For each target (the listed defaults plus two control sites) it makes `-Tekrar` HTTPS requests and reports the median and p90 of DNS, TCP, TLS, server wait and time to first byte. A throughput figure appears only when the sample is large enough to be meaningful. A DNS time of 0 ms usually means the system resolver answered from its cache. The TCP time can be blank when the resolver answered after the connection had already started; the other timings stay valid. The command contacts those sites directly and stores nothing unless you pass `-Kaydet`. With `-Kaydet` it appends a numeric summary (medians, p90, success counts, service state and profile name, no IPs or paths) to `%LOCALAPPDATA%\GoodbyeDPI-TR\olcumler.json`, keeps the latest 50 runs, and compares the first-byte time with the previous saved run. Only changes of at least 30 ms and 20% are called faster or slower; smaller differences are reported as possible noise. This file is per user and is never read by the watchdog. `durum -Json` reports the latest saved run as `SonOlcum`.
+Command names remain Turkish. Most read-only commands work without elevation.
 
-When the profile search picks a DNS server it now measures every candidate directly over UDP (no OS cache involved), requires the first query for each target to be answered, at least half of all queries to be answered and none to return a blocking address, and chooses the lowest median latency instead of the first one that works. A server that was already saved is kept unless it is slower than the best by more than 20% plus 15 ms, so small differences do not make it change. `hiz -DnsSirala` shows the same ranking without changing anything.
+### Setup & Service Control
 
-The watchdog only replaces the DNS server after three unanswered tries (one lost UDP packet is not a failure), and when its periodic profile search ends up with the same profile and DNS as the current ones it leaves the service running instead of restarting it.
+| Command | Elevation | Description |
+|---|---|---|
+| `.\gdpi-tr.ps1 bul` | Admin | Find the fastest safe profile and UDP DNS server |
+| `.\gdpi-tr.ps1 kur` | Admin | Install or upgrade the Windows service and watchdog |
+| `.\gdpi-tr.ps1 durum` | Admin | Show service, watchdog, profile, and live connectivity state |
+| `.\gdpi-tr.ps1 durum -Json` | User | Structured status JSON without elevation or network tests |
+| `.\gdpi-tr.ps1 duraklat` | Admin | Pause the service persistently across reboots (`Disabled`) |
+| `.\gdpi-tr.ps1 devam` | Admin | Resume a paused service |
+| `.\gdpi-tr.ps1 doktor` | Admin | Scan for conflicting VPNs, antivirus, or other DPI tools |
+| `.\gdpi-tr.ps1 rapor` | User | Generate an offline, privacy-safe diagnostic JSON report |
+| `.\gdpi-tr.ps1 kaldir` | Admin | Uninstall the service, watchdog, and app files safely |
+| `.\gdpi-tr.ps1 kaldir -Eski` | Admin | Also remove a legacy `GoodbyeDPI` service |
 
-`hiz -Oneriler` reads, without changing anything or needing elevation, a few things that commonly limit real-world speed and are outside this tool: an Ethernet link negotiated at 100 Mbps or half duplex, a slow Wi-Fi link rate, several active adapters, an active VPN/tunnel adapter, the Power saver plan and a system proxy. It prints possible causes only; finding nothing does not mean the connection is healthy, and no setting is ever changed.
+### Speed & Connection Diagnostics (`hiz`)
 
-When a DPI block has to be bypassed, the profile search no longer stops at the first profile that works. After the first working profile it also tries at most two more, never the riskier `--set-ttl` ones, and measures the time from connection setup to the first byte (DNS excluded) under each. The safest working profile is kept unless another one is faster by at least 30 ms and 20%; a profile that is already saved is kept unless it is that much slower. If a profile's speed could not be measured reliably, the safest working profile is used. Profile search needs administrator rights and the WinDivert driver, so this part is covered by automated tests with mocks and still needs a check on a real Windows machine.
+All `hiz` modes support **`-Json`** for structured output (only `-AB` requires elevation):
 
-Use menu option **8** to pause and **9** to resume. Windows keeps the service disabled across reboots while paused, and the watchdog skips its checks.
+| Command | Elevation | Description |
+|---|---|---|
+| `.\gdpi-tr.ps1 hiz [-Tekrar N]` | User | Measure DNS, TCP, TLS, server wait, and TTFB (median & p90) |
+| `.\gdpi-tr.ps1 hiz -Kaydet` | User | Save a numeric summary locally and compare with the previous run |
+| `.\gdpi-tr.ps1 hiz -Gecmis` | User | List saved local measurements (last 50 runs) |
+| `.\gdpi-tr.ps1 hiz -DnsSirala` | User | Rank DNS candidates by direct UDP latency (read-only) |
+| `.\gdpi-tr.ps1 hiz -Oneriler` | User | Check local speed limiters (link rate, VPN, power plan, proxy) |
+| `.\gdpi-tr.ps1 hiz -AB` | Admin | Compare targets with service off vs on (locked, restores state) |
+| `.\gdpi-tr.ps1 hiz -Indirme` | User | Opt-in throughput test (max 5 MB/run to `NUL`, optional `-IndirmeUrl`) |
 
-JSON state writes preserve the previous valid object in a sibling `.bak` file. If the current file is damaged, reads use that backup and display a warning. Review the recovered settings before applying a profile. Keep backups with the same access restrictions as the original files.
+### Domain Lists
 
-Use `kaldir` to uninstall; deleting the original download folder does not remove the running service. The installer and profile probe **refuse to stop or delete other GoodbyeDPI installations automatically**: if another instance is detected, stop or uninstall it yourself first. Uninstall removes this app's service and files but leaves shared WinDivert drivers intact so other networking tools are not disrupted. Inspect local logs before sharing them because they can describe your network and visited test destinations.
+| Command | Elevation | Description |
+|---|---|---|
+| `.\gdpi-tr.ps1 liste-guncelle` | Admin | Download, validate, and apply `turkiye.txt` with rollback |
+| `.\gdpi-tr.ps1 alan-listele [-Json]` | User | List custom domains in `listeler/kullanici.txt` |
+| `.\gdpi-tr.ps1 alan-ekle -Hedef example.com` | Admin | Add a custom domain and safely reload the running service |
+| `.\gdpi-tr.ps1 alan-sil -Hedef example.com` | Admin | Remove a custom domain and safely reload the running service |
 
-Uninstall preserves shared WinDivert registrations and retains the installed `bin` folder while a WinDivert driver is registered. It also leaves the older ProgramData data directory in place. If Windows is still deleting the service, close the Services console or reboot, then run uninstall again.
+> **Interactive menu (`GoodbyeDPI-TR.cmd`):** Options **1–10** cover setup, status, doctor, list refresh, uninstall, pause (**8**), resume (**9**), and privacy report (**10**). Option **11** opens the **Speed & Diagnostics submenu**, and option **12** opens the **Custom Domain List submenu**.
 
-## Requirements and limitations
+---
 
-- Windows 10 version 1803 or newer, supported x86/x64 hardware and administrator access.
-- ARM64 is not supported by the upstream driver used here.
-- Discord voice uses UDP, which this DPI manipulation does not address.
-- Some profiles disable QUIC across the system; network compatibility requires real-device checks.
-- Automated script tests cannot establish that any profile works on your ISP.
+## How It Works
+
+### Scoped Filtering & Custom Domains
+By default, GoodbyeDPI-TR only processes domains in `listeler/turkiye.txt` and `listeler/kullanici.txt` so banking, government, and gaming traffic stay unaffected. Manage custom domains with `alan-ekle` / `alan-sil` / `alan-listele` (or menu option **12**). Reinstalling always preserves your `kullanici.txt`. Avoid `-Genel` unless you understand its impact on unrelated traffic.
+
+### Latency-Based DNS & Safe Profile Selection
+- **DNS selection:** Measures each non-standard-port UDP DNS candidate directly (bypassing OS cache), rejects servers returning ISP block IPs, and picks the lowest median latency. An already saved server is kept unless another is faster by more than **20% + 15 ms**.
+- **Profile selection:** After finding the first working profile, tests up to two additional safe profiles (never escalating to riskier `--set-ttl` profiles unnecessarily) and compares setup-to-first-byte latency. The safest working profile is kept unless another is faster by at least **30 ms and 20%**.
+
+### Watchdog & Recovery
+A `SYSTEM` scheduled task (`GoodbyeDPI-TR Bekci`) monitors the service at startup, every 15 minutes, and on network changes:
+- **No network churn:** Skips changes when no network adapter is up, requires 3 consecutive UDP failures before switching DNS, and leaves the service running if a periodic profile re-check returns the same profile and DNS.
+- **Persistent pause:** When paused (`duraklat` / menu **8**), the service stays `Disabled` across reboots and the watchdog skips all checks.
+- **Transactional updates & `.bak` recovery:** Domain list updates and installs stage files first and roll back if the service fails to restart. JSON state writes keep the last valid object in a sibling `.bak` file.
+
+### Speed Diagnostics Notes
+- `hiz` measures connection stage timings, not ISP line speed, and cannot increase bandwidth. Only shifts of at least **30 ms and 20%** are labeled faster or slower; smaller changes are flagged as possible noise.
+- `-Kaydet` writes numeric summaries only (no IPs or paths) to `%LOCALAPPDATA%\GoodbyeDPI-TR\olcumler.json`; this per-user file is never read by the `SYSTEM` watchdog.
+- `hiz -AB` runs under the shared operation lock (`Invoke-KilitliIslem`), refuses if the service is missing or paused, and restores the original service state in `finally` even on interruption.
+- `hiz -Indirme` is strictly opt-in, streams up to 5 MB per run to `NUL` (zero disk writes) with a 20 s timeout, and validates custom `-IndirmeUrl` inputs as strict `https://` URLs.
+
+---
+
+## Security & Safety
+
+- **Verified upstream binaries:** Official `ValdikSS/GoodbyeDPI` archives and each extracted binary are verified against pinned SHA-256 hashes during installation.
+- **Restricted installation path:** Configuration, binaries, and logs live under `C:\Program Files\GoodbyeDPI-TR` (administrator write-only), preventing standard users from tampering with `SYSTEM` tasks.
+- **No foreign process interference:** `bul` and `kur` refuse to stop or delete other GoodbyeDPI installations automatically. `kaldir` removes only GoodbyeDPI-TR's own service/files and preserves shared `WinDivert` drivers when another registration exists.
+- **Privacy-safe diagnostics (`rapor`):** Offline JSON report containing version, service/watchdog state, profile, DNS provider name, and domain count—never raw logs, usernames, full paths, IPs, or target domains.
+
+See [SECURITY.md](SECURITY.md) and [SECURITY_AUDIT.md](SECURITY_AUDIT.md) for details.
+
+---
+
+## Requirements & Limitations
+
+- Windows 10 (1803+) or Windows 11, x86 or x64 (built-in `curl.exe` required).
+- **ARM64 is not supported** (upstream WinDivert has no ARM64 driver).
+- Discord voice uses UDP, which GoodbyeDPI does not manipulate.
+- Profiles with `-q` block QUIC (HTTP/3) system-wide; browsers fall back to TCP.
+- Automated Pester tests mock Windows services and drivers; real Windows VM verification is tracked in [docs/VM_TEST_CHECKLIST.md](docs/VM_TEST_CHECKLIST.md).
+
+---
 
 ## Development
 
-Windows CI runs Pester 4.10.1 and PSScriptAnalyzer. See the workflow for the exact commands. The [Turkish guide](README.tr.md) retains detailed network behavior and historical manual measurements.
+```powershell
+# Run unit tests
+Invoke-Pester .\tests
 
-The wrapper is MIT licensed. Upstream GoodbyeDPI and WinDivert have their own licenses.
+# Run PSScriptAnalyzer with repository settings
+Invoke-ScriptAnalyzer -Path .\gdpi-tr.ps1 -Settings .\.PSScriptAnalyzerSettings.psd1
 
-[Security policy](SECURITY.md) · [Repository security audit](SECURITY_AUDIT.md)
+# Run read-only VM verification evidence collector
+.\scripts\vm-verify.ps1 -Asama sonrasi -CiktiDizini C:\vm-kanit
+```
 
-## Privacy-safe diagnostics
+GitHub Actions runs Pester 4.10.1, PSScriptAnalyzer 1.23.0 (`Error` + `Warning`), release archive SHA-256 smoke tests, Gitleaks secret scanning, and release tag ↔ `$Script:Surum` verification.
 
-Run `./gdpi-tr.ps1 rapor` (no administrator privileges required) or choose menu option 10. A local `GoodbyeDPI-TR-rapor-*.json` file is written to the current user's temporary directory.
+## License
 
-The read-only report contains the application version, service/watchdog status, selected profile, DNS provider name and active domain count. It **never includes raw logs, usernames, full filesystem paths, IP addresses or target domains**. No telemetry is uploaded, no connectivity checks are performed and no services are modified. Always review the JSON before sharing.
-
-## Safer domain-list updates
-
-The `liste-guncelle` command first validates the downloaded source, generates the merged list in a temporary file, and backs up both active files before applying them. If a running GoodbyeDPI-TR service fails to restart, both files are restored and an error is shown. The watchdog treats only successful updates as completed; on failure it retries after one hour instead of waiting a full day. Existing user domain lists are preserved. Manual validation on a Windows VM is still recommended before deploying a new release.
-
-## Release archive integrity
-
-Releases include the Turkish README, English README and security policy alongside the launcher and domain lists. Each versioned ZIP has a companion `.zip.sha256` manifest containing its SHA-256 digest.
-
-Verify a downloaded release with PowerShell: `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip`. Compare the output to the corresponding `.zip.sha256` asset. Download and verify only official project releases.
+Scripts in this repository are licensed under the [MIT License](LICENSE). Upstream GoodbyeDPI (Apache-2.0) and WinDivert (LGPL-3.0 / GPL-2.0) carry their own licenses.

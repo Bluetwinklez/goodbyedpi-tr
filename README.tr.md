@@ -1,134 +1,147 @@
 # GoodbyeDPI-TR
 
-Türkiye için [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI) kurulum ve yönetim aracı. [GoodbyeDPI-Turkey](https://github.com/cagritaskn/GoodbyeDPI-Turkey) fork'unun sık şikâyet edilen sorunlarını gidermek için yeniden yazıldı.
+[![CI](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/ci.yml/badge.svg)](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/ci.yml)
+[![Secret scanning](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/Bluetwinklez/goodbyedpi-tr/actions/workflows/secret-scan.yml)
+[![Lisans: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> VPN değildir. Trafiğinizi şifrelemez, IP'nizi gizlemez. Yalnızca alan adı (DNS) ve SNI tabanlı erişim engellerini aşar. IP tabanlı engellerde işe yaramaz.
+> **[English Guide (README.md)](README.md)** · **[Değişiklik Günlüğü](CHANGELOG.md)** · **[Güvenlik Politikası](SECURITY.md)** · **[VM Doğrulama Listesi](docs/VM_TEST_CHECKLIST.md)**
 
-## Neden
+Türkiye ağ koşulları için [GoodbyeDPI](https://github.com/ValdikSS/GoodbyeDPI) kurulum, teşhis ve hizmet yönetim aracı. [GoodbyeDPI-Turkey](https://github.com/cagritaskn/GoodbyeDPI-Turkey) fork'unun sık karşılaşılan sorunlarını gidermek için yeniden yazıldı.
 
-| GoodbyeDPI-Turkey sorunu | GoodbyeDPI-TR |
+> **VPN değildir:** Trafiğinizi şifrelemez, IP adresinizi gizlemez. Yalnızca alan adı (DNS) ve SNI tabanlı erişim engellerini aşar; IP tabanlı engellerde işe yaramaz.
+
+---
+
+## Neden GoodbyeDPI-TR?
+
+| GoodbyeDPI-Turkey sorunu | GoodbyeDPI-TR çözümü |
 |---|---|
-| Hileler tüm trafiğe uygulanıyor; oyunlar, bankalar, devlet siteleri, yayın platformları bozuluyor | Varsayılan olarak yalnızca `listeler/` içindeki alan adlarına uygulanır |
-| Sabit parametre; İSS'e göre 7 farklı `.cmd` dosyasını elle denemek gerekiyor | `bul` komutu 9 profili sırayla dener, çalışanı kendisi seçer |
-| DNS tüm sorguları şifresiz olarak Yandex'e (Rusya) gönderiyor; Yandex'e ulaşılamazsa internet tamamen gidiyor | Önce Quad9 (filtresiz), sonra OpenDNS, en son Yandex denenir; yanıt vermeyen sunucu seçilmez |
-| Kurulumdan sonra internet kesilirse kullanıcı ne olduğunu anlamıyor | Kurulumdan sonra bağlantı test edilir; bozulduysa otomatik geri alınır |
-| Kurulumdan sonra DNS sunucusu düşerse ya da ağ değişirse internet tamamen gidiyor | Bekçi görevi açılışta, 15 dakikada bir ve ağ değişiminde denetler: DNS'i değiştirir, profili yeniden bulur ya da hizmeti durdurur |
-| Engel listesi elle güncelleniyor | Liste günde bir kez bu depodan güncellenir (her satır doğrulanır) |
-| Klasör taşınınca hizmet bozuluyor | `C:\Program Files\GoodbyeDPI-TR` altına sabit kurulur |
-| Dosyaları silmek hizmeti kaldırmaz | `kaldir` hizmeti ve kendi kurulum kayıtlarını temizler. Paylaşılan WinDivert kaydı varsa kurulu `bin` klasörünü korur. |
-| Kaspersky/Avast çakışmaları elle bulunuyor | `doktor` komutu çakışan yazılımları, VPN'leri ve diğer DPI araçlarını listeler |
-| ZIP içinde ikili dosyalar dağıtılıyor | Resmi ValdikSS sürümü indirilir; zip ve içindeki her dosya SHA256 ile doğrulanır |
-| Kaldırmak için indirilen klasörü saklamak gerekiyor | Başlat menüsü kısayolu ve Programlar ve Özellikler kaydı eklenir |
+| Hileler tüm trafiğe uygulanır; oyunlar, bankalar ve devlet siteleri bozulabilir | Varsayılan olarak yalnızca `listeler/` içindeki alan adlarına uygulanır |
+| İSS'e göre farklı `.cmd` dosyalarını elle denemek gerekir | `bul` komutu güvenli profilleri ve DNS adaylarını ölçerek en iyisini seçer |
+| DNS sorguları tek sunucuya gider; sunucu düşerse internet kesilir | Quad9 (`9953`), OpenDNS (`443`), Yandex (`1253`) doğrudan UDP gecikmesiyle ölçülür |
+| Kurulum sonrası bağlantı bozulursa elle onarmak gerekir | Kurulum ve liste güncellemelerinde bağlantı testi ve otomatik geri alma (rollback) vardır |
+| Ağ değişiminde veya DNS kopmasında hizmet bozulur | `SYSTEM` bekçi görevi DNS'i ve bağlantıyı izler, gereksiz yeniden başlatma yapmaz |
+| Klasör taşınınca hizmet bozulur, kaldırmak zordur | `C:\Program Files\GoodbyeDPI-TR` altına kurulur; `kaldir` ile temizce silinir |
+| ZIP içinde doğrulanmamış ikili dosyalar dağıtılır | Resmi ValdikSS paketi indirilir; ZIP ve her ikili dosya SHA-256 ile doğrulanır |
 
-## Kullanım
+---
 
-1. [Releases](https://github.com/Bluetwinklez/goodbyedpi-tr/releases) sayfasından son ZIP'i indirip bir klasöre çıkarın.
-2. `GoodbyeDPI-TR.cmd` dosyasına çift tıklayın (yönetici izni ister).
-3. Menüden **1) Çalışan ayarı bul ve kur** seçeneğini seçin.
+## Hızlı Başlangıç
 
-Komut satırından (yönetici PowerShell):
+1. [Releases](https://github.com/Bluetwinklez/goodbyedpi-tr/releases) sayfasından son sürüm ZIP dosyasını ve `.zip.sha256` özetini indirin.
+2. İndirilen ZIP dosyasını PowerShell'de doğrulayın:
+   ```powershell
+   Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip
+   Get-Content .\GoodbyeDPI-TR-vX.Y.Z.zip.sha256
+   ```
+3. Klasöre çıkarıp **`GoodbyeDPI-TR.cmd`** dosyasına çift tıklayın (yönetici izni ister).
+4. Menüden **1) Çalışan ayarı bul ve kur (önerilen)** seçeneğini seçin.
 
-```powershell
-.\gdpi-tr.ps1 bul                   # çalışan profili ve DNS'i bul
-.\gdpi-tr.ps1 kur                   # hizmet olarak kur (ayar yoksa önce bulur)
-.\gdpi-tr.ps1 durum                 # hizmet, bekçi, profil ve erişim durumu
-.\gdpi-tr.ps1 durum -Json           # yönetici izni ve ağ testi olmadan yapılandırılmış durum
-.\gdpi-tr.ps1 hiz -Tekrar 5         # bağlantı aşamalarının sürelerini ölç (yönetici gerekmez, hiçbir şeyi değiştirmez)
-.\gdpi-tr.ps1 hiz -Kaydet           # ölçümü kaydet ve önceki kayıtla karşılaştır
-.\gdpi-tr.ps1 hiz -Gecmis           # kayıtlı ölçümleri listele
-.\gdpi-tr.ps1 hiz -DnsSirala        # DNS sunucu adaylarını gecikmeye göre sırala (hiçbir şeyi değiştirmez)
-.\gdpi-tr.ps1 hiz -Oneriler         # hızı sınırlayabilecek sistem ayarlarını listele (salt okunur)
-.\gdpi-tr.ps1 hiz -AB               # hizmet kapalı ve açıkken aynı hedefleri ölçüp farkı göster (yönetici gerekir)
-.\gdpi-tr.ps1 hiz -Indirme          # isteğe bağlı gerçek indirme testi (en çok 5 MB/deneme; isteğe bağlı -IndirmeUrl)
-.\gdpi-tr.ps1 alan-listele          # kullanici.txt içindeki özel alan adlarını listele (-Json destekler)
-.\gdpi-tr.ps1 alan-ekle -Hedef ornek.com   # özel listeye alan adı ekle ve hizmeti yenile
-.\gdpi-tr.ps1 alan-sil -Hedef ornek.com    # özel listeden alan adı kaldır ve hizmeti yenile
-.\gdpi-tr.ps1 duraklat              # yeniden başlatma sonrasında da duraklat
-.\gdpi-tr.ps1 devam                 # hizmeti yeniden etkinleştir
-.\gdpi-tr.ps1 liste-guncelle        # engelli alan adı listesini güncelle
-.\gdpi-tr.ps1 doktor                # sorun tarama
-.\gdpi-tr.ps1 rapor                 # gizlilik korumalı yerel JSON raporu
-.\gdpi-tr.ps1 kaldir                # tamamen kaldır
-.\gdpi-tr.ps1 kaldir -Eski          # eski GoodbyeDPI-Turkey hizmetini de kaldır
-.\gdpi-tr.ps1 bul -Hedef ornek.com  # farklı bir siteye göre ayar bul
-.\gdpi-tr.ps1 bul -Genel            # hileleri tüm trafiğe uygula (önerilmez)
-```
+Kurulum sonrası araç `C:\Program Files\GoodbyeDPI-TR` altında kalır, Başlat menüsüne ve Programlar ve Özellikler listesine eklenir; indirdiğiniz klasörü silebilirsiniz.
 
-Kurulumdan sonra indirdiğiniz klasörü silebilirsiniz; araç `C:\Program Files\GoodbyeDPI-TR` altında kalır ve Başlat menüsünden açılır.
+---
 
-`hiz` bir hat hızı testi değildir ve bant genişliğinizi artırmaz. Her hedef için (varsayılan liste ve iki kontrol sitesi) `-Tekrar` kez HTTPS isteği atar; DNS, TCP, TLS, sunucu bekleme ve ilk bayt sürelerinin ortanca ve p90 değerlerini gösterir. Verim değeri yalnızca örnek yeterince büyükse görünür. 0 ms DNS süresi çoğunlukla sistem çözümleyicisinin önbellekten yanıt verdiği anlamına gelir. Çözümleyici bağlantı başladıktan sonra yanıt verirse TCP süresi boş kalabilir; diğer süreler geçerlidir. Komut bu sitelere doğrudan bağlanır ve `-Kaydet` vermedikçe hiçbir şey kaydetmez. `-Kaydet` ile sayısal bir özet (ortanca, p90, başarı sayıları, hizmet durumu ve profil adı; IP veya yol yok) `%LOCALAPPDATA%\GoodbyeDPI-TR\olcumler.json` dosyasına eklenir, son 50 ölçüm tutulur ve ilk bayt süresi önceki kayıtla karşılaştırılır. Yalnızca en az 30 ms ve %20 değişim "daha hızlı" veya "daha yavaş" diye anılır; daha küçük farklar olası ölçüm gürültüsü olarak belirtilir. Bu dosya kullanıcıya özeldir ve bekçi tarafından okunmaz. `durum -Json` son kayıtlı ölçümü `SonOlcum` alanında verir.
+## Komutlar
 
-Profil araması DNS sunucusu seçerken artık her adayı doğrudan UDP ile ölçer (işletim sistemi önbelleği araya girmez), her hedefin ilk sorgusunun yanıtlanmasını, sorguların en az yarısının yanıtlanmasını ve hiçbirinin engelli adres döndürmemesini ister ve çalışan ilk sunucu yerine ortanca gecikmesi en düşük olanı seçer. Daha önce kaydedilmiş sunucu, en iyiden %20 ve 15 ms'den fazla yavaş değilse korunur; küçük farklar yüzünden sunucu değişmez. `hiz -DnsSirala` aynı sıralamayı hiçbir şeyi değiştirmeden gösterir.
+### Kurulum ve Hizmet Yönetimi
 
-Bekçi DNS sunucusunu yalnızca üç denemede de yanıt alamazsa değiştirir (tek bir kayıp UDP paketi arıza sayılmaz). Düzenli profil araması mevcut profil ve DNS ile aynı sonucu verirse hizmeti yeniden başlatmaz, çalışır halde bırakır.
+| Komut | Yetki | Açıklama |
+|---|---|---|
+| `.\gdpi-tr.ps1 bul` | Yönetici | Çalışan en hızlı güvenli profili ve DNS sunucusunu bul |
+| `.\gdpi-tr.ps1 kur` | Yönetici | Hizmet ve bekçi görevini kur veya yükselt |
+| `.\gdpi-tr.ps1 durum` | Yönetici | Hizmet, bekçi, profil ve canlı erişim durumu |
+| `.\gdpi-tr.ps1 durum -Json` | Kullanıcı | Yönetici izni ve ağ testi olmadan yapılandırılmış JSON durum |
+| `.\gdpi-tr.ps1 duraklat` | Yönetici | Hizmeti yeniden başlatma sonrası da kalıcı duraklat (`Disabled`) |
+| `.\gdpi-tr.ps1 devam` | Yönetici | Duraklatılan hizmeti yeniden etkinleştir |
+| `.\gdpi-tr.ps1 doktor` | Yönetici | Çakışan VPN, antivirüs ve diğer DPI yazılımlarını tara |
+| `.\gdpi-tr.ps1 rapor` | Kullanıcı | Özel bilgi içermeyen çevrimdışı teşhis JSON raporu üret |
+| `.\gdpi-tr.ps1 kaldir` | Yönetici | Hizmeti, bekçi görevini ve uygulama dosyalarını güvenle kaldır |
+| `.\gdpi-tr.ps1 kaldir -Eski` | Yönetici | Eski `GoodbyeDPI` hizmetini de kaldır |
 
-`hiz -Oneriler`, hiçbir şeyi değiştirmeden ve yönetici izni istemeden, gerçek hızı sık sınırlayan ve bu aracın dışında kalan birkaç şeyi okur: 100 Mbps'e veya yarım dupleksa düşmüş Ethernet bağlantısı, düşük Wi-Fi bağlantı hızı, birden fazla açık bağdaştırıcı, açık VPN/tünel bağdaştırıcısı, Güç tasarrufu planı ve sistem proxy'si. Yalnızca olası nedenleri yazar; hiçbir şey bulunmaması bağlantının sağlıklı olduğu anlamına gelmez ve hiçbir ayar değiştirilmez.
+### Hız ve Bağlantı Teşhisi (`hiz`)
 
-DPI engeli aşılması gerektiğinde profil araması artık çalışan ilk profilde durmaz. İlk çalışan profilden sonra en fazla iki profil daha dener (riskli `--set-ttl` profillerini hiç denemez) ve her birinde bağlantı kurulumundan ilk bayta kadar geçen süreyi (DNS hariç) ölçer. Başka bir profil en az 30 ms ve %20 daha hızlı değilse en güvenli çalışan profil korunur; kayıtlı profil de o kadar yavaş değilse korunur. Bir profilin hızı güvenilir ölçülemezse en güvenli çalışan profil kullanılır. Profil araması yönetici izni ve WinDivert sürücüsü gerektirdiğinden bu bölüm mock'lu otomatik testlerle doğrulandı; gerçek bir Windows makinesinde ayrıca denenmesi gerekir.
+Tüm `hiz` kipleri **`-Json`** çıktısını destekler (yalnızca `-AB` yönetici izni gerektirir):
 
-Menüde **8** hizmeti duraklatır, **9** tekrar çalıştırır. Windows yeniden başlasa da duraklatma korunur ve bekçi denetimleri atlar.
+| Komut | Yetki | Açıklama |
+|---|---|---|
+| `.\gdpi-tr.ps1 hiz [-Tekrar N]` | Kullanıcı | DNS, TCP, TLS, sunucu ve ilk bayt sürelerini ölç (ortanca & p90) |
+| `.\gdpi-tr.ps1 hiz -Kaydet` | Kullanıcı | Sayısal özeti yerelde kaydet ve önceki kayıtla karşılaştır |
+| `.\gdpi-tr.ps1 hiz -Gecmis` | Kullanıcı | Kayıtlı ölçümleri listele (son 50 kayıt) |
+| `.\gdpi-tr.ps1 hiz -DnsSirala` | Kullanıcı | DNS adaylarını doğrudan UDP gecikmesine göre sırala (salt okunur) |
+| `.\gdpi-tr.ps1 hiz -Oneriler` | Kullanıcı | Hızı sınırlayabilecek sistem ayarlarını tara (salt okunur) |
+| `.\gdpi-tr.ps1 hiz -AB` | Yönetici | Hizmet kapalı ve açıkken aynı hedefleri karşılaştır (kilitli, eski duruma döner) |
+| `.\gdpi-tr.ps1 hiz -Indirme` | Kullanıcı | İsteğe bağlı gerçek indirme testi (en çok 5 MB/deneme, `-IndirmeUrl` destekli) |
 
-JSON ayarları kaydedilirken önceki geçerli nesne aynı klasörde `.bak` dosyasında saklanır. Ana dosya bozulursa yedek okunur ve uyarı gösterilir. Bir profili uygulamadan önce kurtarılan ayarları kontrol edin. Yedekleri asıl dosyayla aynı erişim izinleriyle koruyun.
+### Alan Adı Listeleri
 
-İlk kurulumdan önce özel alan adlarını, satır başına bir tane gelecek şekilde paketteki `listeler/kullanici.txt` dosyasına ekleyin. Uygulama zaten kuruluysa kurulum klasöründeki aynı dosyayı yönetici olarak düzenleyin, sonra yeniden kurun. Yeniden kurulum, kurulu kullanıcı listesini korur.
+| Komut | Yetki | Açıklama |
+|---|---|---|
+| `.\gdpi-tr.ps1 liste-guncelle` | Yönetici | `turkiye.txt` listesini indir, doğrula ve rollback korumalı uygula |
+| `.\gdpi-tr.ps1 alan-listele [-Json]` | Kullanıcı | `listeler/kullanici.txt` içindeki özel alan adlarını listele |
+| `.\gdpi-tr.ps1 alan-ekle -Hedef ornek.com` | Yönetici | Özel listeye alan adı ekle ve çalışan hizmeti güvenle yenile |
+| `.\gdpi-tr.ps1 alan-sil -Hedef ornek.com` | Yönetici | Özel listeden alan adı kaldır ve çalışan hizmeti güvenle yenile |
 
-Eski bir GoodbyeDPI hizmeti kuruluysa GoodbyeDPI-TR'yi kurmadan önce eski hizmeti kendi kaldırma aracıyla kaldırın. Ayrı bir GoodbyeDPI işlemi çalışıyorsa profil aramasından önce o işlemi kapatın.
+> **Etkileşimli menü (`GoodbyeDPI-TR.cmd`):** **1–10** arası seçenekler kurulum, durum, doktor, liste güncelleme, kaldırma, duraklatma (**8**), devam (**9**) ve gizlilik raporunu (**10**) sunar. **11** numaralı seçenek **Hız ve Teşhis alt menüsünü**, **12** numaralı seçenek **Özel Alan Adı alt menüsünü** açar.
 
-Kaldırma, paylaşılan WinDivert sürücüsünü ve eski sürümün ProgramData veri klasörünü korur. Windows hizmetin silinmesini bekletirse Hizmetler penceresini kapatın, gerekirse Windows'u yeniden başlatın ve kaldırmayı tekrar çalıştırın.
+---
 
-## Nasıl çalışır
+## Nasıl Çalışır?
 
-1. **DNS:** Türk İSS'leri engelli alan adları için `195.175.254.2` adresini döndürüyor ve 53. porttaki başka DNS sunucularına giden sorguları engelliyor. Araç, standart dışı portta dinleyen sunucuları test eder (Quad9 `9953`, OpenDNS `443`, Yandex `1253`). Gerçek adres dönen ilk sunucuyu seçer ve GoodbyeDPI'ın `--dns-addr` özelliğiyle DNS sorgularını oraya yönlendirir.
-2. **DPI:** DNS'ten bağımsız ölçüm yapmak için hedefleri DoH ile çözer ve HTTPS bağlantısını dener. Bağlantı sıfırlanıyorsa profilleri sırayla dener: önce parçalama ve yanlış checksum/seq kullanan güvenli olanlar, en son siteleri bozabilen `--set-ttl` profilleri. Hem hedefleri hem de kontrol sitesini açan ilk profil seçilir.
-   Bilinen İSS'lerde (ASN `ipinfo.io` üzerinden öğrenilir) o hatta çalıştığı doğrulanan profil önce denenir.
-3. **Hizmet:** Seçilen profil, `--blacklist` ve DNS yönlendirmesiyle birlikte `GoodbyeDPI-TR` adlı otomatik başlayan bir Windows hizmeti olarak kurulur. Çöktüğünde yeniden başlatılır. IPv6 DNS yalnızca makinede genel IPv6 adresi varsa ve sunucu IPv6'dan yanıt veriyorsa yönlendirilir.
-4. **Bekçi:** `GoodbyeDPI-TR Bekci` zamanlanmış görevi SYSTEM olarak çalışır ve `C:\Program Files\GoodbyeDPI-TR\veri\bekci.log` dosyasına yazar.
-   - DNS sunucusu yanıt vermiyorsa başka bir sunucuya geçer. Hiçbiri yanıt vermiyorsa hizmeti durdurur; internet kesilmez.
-   - Hizmet genel interneti bozuyorsa hizmeti durdurur ve profili yeniden arar.
-   - Hedefler üst üste iki denetimde açılmazsa profili yeniden arar (en fazla 6 saatte bir).
-   - Listeyi günde bir kez günceller.
+1. **Kapsamlı liste ve özel alan adları:** İşlem varsayılan olarak yalnızca `listeler/turkiye.txt` ve `listeler/kullanici.txt` içindeki alan adlarına uygulanır. Özel siteleri `alan-ekle` / `alan-sil` / `alan-listele` ile (veya menü **12**'den) yönetebilirsiniz. Yeniden kurulum `kullanici.txt` dosyanızı korur. `-Genel` seçeneği tüm trafiği etkilediği için önerilmez.
+2. **Gecikme tabanlı DNS seçimi:** Standart dışı porttaki DNS adayları (Quad9 `9953`, OpenDNS `443`, Yandex `1253`) işletim sistemi önbelleği olmadan doğrudan UDP ile ölçülür; engel IP'si (`195.175.254.x`) döndürenler elenir ve en düşük ortanca gecikmeli sunucu seçilir. Kayıtlı sunucu en iyiden **%20 + 15 ms**'den fazla yavaş değilse değiştirilmez.
+3. **Ölçüme dayalı güvenli profil seçimi:** İlk çalışan profilden sonra en fazla iki güvenli profil daha denenir (riskli `--set-ttl` profillerine gereksiz geçilmez). Başka bir profil en az **30 ms ve %20** daha hızlı değilse en güvenli çalışan profil korunur.
+4. **Bekçi görevi (`GoodbyeDPI-TR Bekci`):** `SYSTEM` hesabıyla açılışta, 15 dakikada bir ve ağ değişiminde çalışır (`C:\Program Files\GoodbyeDPI-TR\veri\bekci.log`):
+   - Ağ bağlantısı yoksa hiçbir şeye dokunmaz.
+   - DNS sunucusunu yalnızca **3 ardışık** denemede yanıt alınamazsa değiştirir.
+   - Düzenli profil taraması mevcut profil ve DNS ile aynı sonucu verirse hizmeti gereksiz yeniden başlatmaz.
+   - Hizmet duraklatılmışsa (`duraklat` / menü **8**) yeniden başlatma sonrası da `Disabled` kalır ve bekçi denetimleri atlar.
+   - Liste güncellemeleri günde bir denenir; hata olursa 1 saat sonra yeniden denenir ve başarısızlıkta eski listeler geri yüklenir.
 
-2026-10-21 tarihinde Türk Telekom hattında test edildi: `discord.com` ve `www.roblox.com` engelliydi. Çalışan profil `modern-5` (`-5`), çalışan DNS Quad9 `9.9.9.10:9953` oldu. Bekçinin DNS değiştirme ve profil yeniden bulma yolları bozuk ayarla denenerek doğrulandı.
+### Hız Ölçümü Notları
+- `hiz` bir hat hızı testi değildir ve bant genişliğinizi artırmaz. Yalnızca **30 ms ve %20** üzerindeki farklar "daha hızlı" / "daha yavaş" olarak işaretlenir; daha küçük farklar ölçüm gürültüsü sayılır.
+- `-Kaydet`, yalnızca sayısal özetleri (IP veya yol olmadan) `%LOCALAPPDATA%\GoodbyeDPI-TR\olcumler.json` dosyasına yazar; bekçi bu kullanıcı dosyasını okumaz. `durum -Json` son ölçümü `SonOlcum` alanında verir.
+- `hiz -AB` ortak işlem kilidi (`Invoke-KilitliIslem`) içinde çalışır; kurulu olmayan veya duraklatılmış hizmette reddeder, hata/kesinti durumunda bile `finally` bloğunda hizmeti ilk haline döndürür.
+- `hiz -Indirme` tamamen isteğe bağlıdır, deneme başına en çok **5 MB** / **20 sn** sınırla doğrudan `NUL`'a akar (diske yazmaz) ve `-IndirmeUrl` için yalnızca geçerli `https://` adreslerini kabul eder.
 
-Ayarlar ve günlük `C:\Program Files\GoodbyeDPI-TR\veri` altında tutulur. Bu klasöre yalnızca yöneticiler yazabilir; böylece normal bir kullanıcı SYSTEM olarak çalışan hizmetin dosyalarını veya ayarlarını değiştiremez.
+---
+
+## Güvenlik ve Kurtarma
+
+- **İkili doğrulama:** Resmi `ValdikSS/GoodbyeDPI` arşivi ve içindeki her dosya sabitlenmiş SHA-256 özetleriyle doğrulanır.
+- **Kısıtlı kurulum klasörü:** Ayarlar ve günlük `C:\Program Files\GoodbyeDPI-TR\veri` altında tutulur (yalnızca yöneticiler yazabilir).
+- **Atomik JSON ve `.bak` yedeği:** Her ayar yazımında son geçerli nesne `.bak` dosyasında saklanır; ana dosya bozulursa yedekten uyarıyla okunur.
+- **Çakışma ve ortak sürücü koruması:** `bul` ve `kur`, başka `goodbyedpi.exe` süreçlerini veya eski `GoodbyeDPI` hizmetini izinsiz durdurmaz. `kaldir`, paylaşılan `WinDivert` kaydı varsa sürücüyü ve `bin` klasörünü korur.
+- **Gizlilik korumalı teşhis (`rapor`):** Yalnızca sürüm, hizmet/bekçi durumu, profil, DNS sağlayıcı adı ve alan adı sayısını içerir; **IP adresi, kullanıcı adı, tam dosya yolu, hedef alan adı veya ham günlük içermez.**
+
+Ayrıntılar için [SECURITY.md](SECURITY.md) ve [SECURITY_AUDIT.md](SECURITY_AUDIT.md) dosyalarına bakın.
+
+---
 
 ## Sınırlar
 
-- Discord sesli kanalları UDP kullanır; GoodbyeDPI UDP trafiğine hile uygulamaz. Ses çalışmazsa [SplitWire-Turkey](https://github.com/cagritaskn/SplitWire-Turkey) veya bir VPN gerekir.
-- `-q` içeren profiller QUIC'i (HTTP/3) tüm sistemde engeller. Tarayıcılar TCP'ye geçer, bu bir sorun çıkarmaz.
-- ARM64 Windows desteklenmez; WinDivert'in ARM64 sürücüsü yok.
-- Windows 10 1803 veya daha yenisi gerekir (dahili `curl.exe`).
+- Windows 10 (1803+) veya Windows 11, x86/x64 gerekir (dahili `curl.exe`).
+- **ARM64 desteklenmez** (WinDivert'in ARM64 sürücüsü yok).
+- Discord sesli kanalları UDP kullanır; GoodbyeDPI UDP trafiğine hile uygulamaz.
+- `-q` içeren profiller QUIC'i (HTTP/3) tüm sistemde engeller; tarayıcılar TCP'ye geçer.
+- Otomatik testler hizmet ve sürücü çağrılarını mock'lar; gerçek Windows VM sürüm kapısı [docs/VM_TEST_CHECKLIST.md](docs/VM_TEST_CHECKLIST.md) ile izlenir.
+
+---
 
 ## Geliştirme
 
 ```powershell
+# Birim testlerini çalıştır
 Invoke-Pester .\tests
+
+# Depo ayarlarıyla PSScriptAnalyzer çalıştır
+Invoke-ScriptAnalyzer -Path .\gdpi-tr.ps1 -Settings .\.PSScriptAnalyzerSettings.psd1
+
+# VM doğrulama kanıt betiği (salt okunur)
+.\scripts\vm-verify.ps1 -Asama sonrasi -CiktiDizini C:\vm-kanit
 ```
 
-GitHub Actions her gönderimde Pester ve PSScriptAnalyzer çalıştırır. `v*` etiketi gönderildiğinde CRLF satır sonlu sürüm ZIP'ini Releases'a yükler.
+GitHub Actions her gönderimde Pester 4.10.1, PSScriptAnalyzer 1.23.0 (`Error` + `Warning`), release ZIP + SHA-256 smoke testi, Gitleaks taraması ve `v*` etiketinde `$Script:Surum` tutarlılık doğrulaması çalıştırır.
 
 ## Lisans
 
-Bu depodaki betikler MIT lisanslıdır. GoodbyeDPI Apache-2.0, WinDivert LGPL-3.0/GPL-2.0 lisanslıdır; ikisi de kurulum sırasında resmi kaynaktan indirilir.
-
-## Diğer GoodbyeDPI kurulumlarıyla çakışma
-
-`bul` ve `kur`, başka `goodbyedpi.exe` süreçlerini veya eski `GoodbyeDPI` hizmetini **izinsiz durdurmaz ya da kaldırmaz**. Çakışma varsa açıklayıcı bir uyarı verir; önce ilgili uygulamayı kendiniz kapatın. Eski hizmeti bilinçli olarak kaldırmak için `kaldir -Eski` kullanılabilir. Bu seçenek bile farklı uygulamaların bağımsız süreçlerine dokunmaz.
-
-`kaldir`, bu uygulamanın hizmetini ve kurulum dosyalarını siler; sistemde ortak kullanılan `WinDivert` sürücülerini otomatik kaldırmaz. Ağ sürücülerinin elle kaldırılması yalnızca hangi programın kullandığından emin olunduğunda yapılmalıdır.
-
-## Gizlilik korumalı teşhis raporu
-
-Menüden **10) Gizlilik korumalı teşhis raporu oluştur** seçeneğini veya PowerShell'den `./gdpi-tr.ps1 rapor` komutunu kullanın. Komut satırında yönetici izni gerekmez. Kullanıcının geçici klasöründe `GoodbyeDPI-TR-rapor-*.json` dosyası oluşur.
-
-Rapor sürüm, servis/bekçi durumu, profil adı, DNS sağlayıcı adı ve etkin alan adı sayısını içerir. **IP adresi, kullanıcı adı, tam dosya yolu, hedef alan adı, ham günlük veya hesap bilgisi içermez.** Herhangi bir sunucuya bilgi göndermez, bağlantı testi yapmaz ve servisleri değiştirmez. Paylaşmadan önce içeriği yine de inceleyin.
-
-## Hata durumunda geri alınabilen liste güncellemesi
-
-`liste-guncelle` önce indirilen alan adlarını doğrular, geçici dosyada yeni birleşik listeyi oluşturur ve etkin listelerin yedeğini alır. Hizmet yeni listeyle yeniden başlatılamazsa hem Türkiye listesini hem etkin listeyi eski haline getirip hizmeti eski ayarlarla yeniden başlatmayı dener. Kullanıcının eklediği alan adları korunur. Bekçi başarısız güncellemeyi başarılı saymaz; 1 saat arayla yeniden dener. Gerçek servis/sürücü davranışı yeni sürüm yayınlanmadan önce Windows ortamında kontrol edilmelidir.
-
-## Yayın ZIP dosyasının doğrulanması
-
-Yeni sürümler Türkçe kullanım kılavuzunu (`README.tr.md`), güvenlik politikasını ve bir SHA-256 doğrulama dosyasını (`.zip.sha256`) içerir. ZIP dosyasını indirdikten sonra PowerShell'de `Get-FileHash -Algorithm SHA256 .\GoodbyeDPI-TR-vX.Y.Z.zip` çalıştırıp sonucu aynı sürümdeki `.zip.sha256` dosyasındaki değerle karşılaştırın.
-
-Bu yöntem indirdiğiniz dosyanın beklenen sürüm dosyasıyla aynı olduğunu doğrular; projenin kaynağına veya dağıtım hesabına duyulan güvenin yerini tutmaz.
+Bu depodaki betikler [MIT Lisansı](LICENSE) ile lisanslanmıştır. GoodbyeDPI (Apache-2.0) ve WinDivert (LGPL-3.0 / GPL-2.0) kendi lisanslarına tabidir.

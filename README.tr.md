@@ -36,6 +36,7 @@ Komut satırından (yönetici PowerShell):
 .\gdpi-tr.ps1 hiz -Tekrar 5         # bağlantı aşamalarının sürelerini ölç (yönetici gerekmez, hiçbir şeyi değiştirmez)
 .\gdpi-tr.ps1 hiz -Kaydet           # ölçümü kaydet ve önceki kayıtla karşılaştır
 .\gdpi-tr.ps1 hiz -Gecmis           # kayıtlı ölçümleri listele
+.\gdpi-tr.ps1 hiz -DnsSirala        # DNS sunucu adaylarını gecikmeye göre sırala (hiçbir şeyi değiştirmez)
 .\gdpi-tr.ps1 duraklat              # yeniden başlatma sonrasında da duraklat
 .\gdpi-tr.ps1 devam                 # hizmeti yeniden etkinleştir
 .\gdpi-tr.ps1 liste-guncelle        # engelli alan adı listesini güncelle
@@ -50,6 +51,8 @@ Komut satırından (yönetici PowerShell):
 Kurulumdan sonra indirdiğiniz klasörü silebilirsiniz; araç `C:\Program Files\GoodbyeDPI-TR` altında kalır ve Başlat menüsünden açılır.
 
 `hiz` bir hat hızı testi değildir ve bant genişliğinizi artırmaz. Her hedef için (varsayılan liste ve iki kontrol sitesi) `-Tekrar` kez HTTPS isteği atar; DNS, TCP, TLS, sunucu bekleme ve ilk bayt sürelerinin ortanca ve p90 değerlerini gösterir. Verim değeri yalnızca örnek yeterince büyükse görünür. 0 ms DNS süresi çoğunlukla sistem çözümleyicisinin önbellekten yanıt verdiği anlamına gelir. Çözümleyici bağlantı başladıktan sonra yanıt verirse TCP süresi boş kalabilir; diğer süreler geçerlidir. Komut bu sitelere doğrudan bağlanır ve `-Kaydet` vermedikçe hiçbir şey kaydetmez. `-Kaydet` ile sayısal bir özet (ortanca, p90, başarı sayıları, hizmet durumu ve profil adı; IP veya yol yok) `%LOCALAPPDATA%\GoodbyeDPI-TR\olcumler.json` dosyasına eklenir, son 50 ölçüm tutulur ve ilk bayt süresi önceki kayıtla karşılaştırılır. Yalnızca en az 30 ms ve %20 değişim "daha hızlı" veya "daha yavaş" diye anılır; daha küçük farklar olası ölçüm gürültüsü olarak belirtilir. Bu dosya kullanıcıya özeldir ve bekçi tarafından okunmaz. `durum -Json` son kayıtlı ölçümü `SonOlcum` alanında verir.
+
+Profil araması DNS sunucusu seçerken artık her adayı doğrudan UDP ile ölçer (işletim sistemi önbelleği araya girmez), her hedefin ilk sorgusunun yanıtlanmasını, sorguların en az yarısının yanıtlanmasını ve hiçbirinin engelli adres döndürmemesini ister ve çalışan ilk sunucu yerine ortanca gecikmesi en düşük olanı seçer. Daha önce kaydedilmiş sunucu, en iyiden %20 ve 15 ms'den fazla yavaş değilse korunur; küçük farklar yüzünden sunucu değişmez. `hiz -DnsSirala` aynı sıralamayı hiçbir şeyi değiştirmeden gösterir.
 
 Menüde **8** hizmeti duraklatır, **9** tekrar çalıştırır. Windows yeniden başlasa da duraklatma korunur ve bekçi denetimleri atlar.
 

@@ -18,6 +18,7 @@ The command names remain Turkish:
 .\gdpi-tr.ps1 hiz -Tekrar 5   # Measure connection stage timings (no elevation, changes nothing)
 .\gdpi-tr.ps1 hiz -Kaydet     # ...and save the result, comparing it with the previous saved run
 .\gdpi-tr.ps1 hiz -Gecmis     # List saved measurements
+.\gdpi-tr.ps1 hiz -DnsSirala  # Rank the DNS server candidates by latency (changes nothing)
 .\gdpi-tr.ps1 duraklat        # Pause the service across reboots
 .\gdpi-tr.ps1 devam           # Resume the service
 .\gdpi-tr.ps1 liste-guncelle  # Refresh domain lists
@@ -34,6 +35,8 @@ If an older GoodbyeDPI service is installed, remove it using its own uninstaller
 The installer downloads upstream binaries and verifies their hashes. A scheduled watchdog checks connectivity, attempts supported recovery and stops the service if it disrupts general access. Configuration and logs are under `C:\Program Files\GoodbyeDPI-TR\veri`. The installation directory is restricted to administrators.
 
 `hiz` is not a line-speed test and cannot raise your bandwidth. For each target (the listed defaults plus two control sites) it makes `-Tekrar` HTTPS requests and reports the median and p90 of DNS, TCP, TLS, server wait and time to first byte. A throughput figure appears only when the sample is large enough to be meaningful. A DNS time of 0 ms usually means the system resolver answered from its cache. The TCP time can be blank when the resolver answered after the connection had already started; the other timings stay valid. The command contacts those sites directly and stores nothing unless you pass `-Kaydet`. With `-Kaydet` it appends a numeric summary (medians, p90, success counts, service state and profile name, no IPs or paths) to `%LOCALAPPDATA%\GoodbyeDPI-TR\olcumler.json`, keeps the latest 50 runs, and compares the first-byte time with the previous saved run. Only changes of at least 30 ms and 20% are called faster or slower; smaller differences are reported as possible noise. This file is per user and is never read by the watchdog. `durum -Json` reports the latest saved run as `SonOlcum`.
+
+When the profile search picks a DNS server it now measures every candidate directly over UDP (no OS cache involved), requires the first query for each target to be answered, at least half of all queries to be answered and none to return a blocking address, and chooses the lowest median latency instead of the first one that works. A server that was already saved is kept unless it is slower than the best by more than 20% plus 15 ms, so small differences do not make it change. `hiz -DnsSirala` shows the same ranking without changing anything.
 
 Use menu option **8** to pause and **9** to resume. Windows keeps the service disabled across reboots while paused, and the watchdog skips its checks.
 

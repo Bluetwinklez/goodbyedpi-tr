@@ -24,6 +24,7 @@
     .\gdpi-tr.ps1 hiz [-Tekrar N] bağlantı aşamalarının sürelerini ölç (yönetici gerekmez)
     .\gdpi-tr.ps1 hiz -Kaydet     ölçümü kullanıcı klasörüne kaydet ve öncekiyle karşılaştır
     .\gdpi-tr.ps1 hiz -Gecmis     kayıtlı ölçümleri listele
+    .\gdpi-tr.ps1 hiz -DnsSirala  DNS sunucu adaylarını gecikmeye göre sırala (hiçbir şeyi değiştirmez)
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
 #>
@@ -39,7 +40,8 @@ param(
     [ValidateRange(1, 20)]
     [int]$Tekrar = 5,
     [switch]$Kaydet,
-    [switch]$Gecmis
+    [switch]$Gecmis,
+    [switch]$DnsSirala
 )
 
 $ErrorActionPreference = 'Stop'
@@ -129,6 +131,9 @@ $Script:DnsAdaylari = @(
     @{ Ad = 'OpenDNS';           V4 = '208.67.222.222'; V6 = '2620:119:35::35';    Port = 443 }
     @{ Ad = 'Yandex';            V4 = '77.88.8.8';      V6 = '2a02:6b8::feed:0ff'; Port = 1253 }
 )
+# Mevcut DNS sunucusu, en hızlının ortancasının bu çarpan + ms sınırı içindeyse değiştirilmez.
+$Script:DnsHisterezisCarpan = 1.2
+$Script:DnsHisterezisMs = 15
 
 # DPI ölçümünde DNS engelini devre dışı bırakmak için DoH sunucuları (IP ile, sertifikada IP var).
 $Script:DohAdaylari = @('https://1.1.1.1/dns-query', 'https://8.8.8.8/dns-query', 'https://94.140.14.140/dns-query')
@@ -458,22 +463,114 @@ function Test-DnsSunucusu($Aday, [string[]]$Alanlar) {
     return $true
 }
 
-function Find-DnsSunucusu([string[]]$Hedefler) {
-    $ipv6 = Test-GenelIPv6
-    foreach ($aday in $Script:DnsAdaylari) {
-        if (-not (Test-DnsSunucusu $aday $Hedefler)) {
-            Uyari "$($aday.Ad) ($($aday.V4):$($aday.Port)) kullanılamıyor"
-            continue
+function Measure-DnsAdayi($Aday, [string[]]$Alanlar, [int]$Tekrar = 3) {
+    # Sunucuya UDP ile doğrudan sorar; işletim sistemi DNS önbelleği araya girmez.
+    # Bir hedefin ilk sorgusu yanıtsız kalırsa aday kullanılamaz sayılır ve ölçüm orada biter
+    # (ölü sunucu için zaman aşımı beklemeyi çoğaltmamak için).
+    $sureler = New-Object 'System.Collections.Generic.List[double]'
+    $denenen = 0
+    $basarisiz = 0
+    $engelli = $false
+    $ilkYanitsiz = $false
+    :alanlar foreach ($h in $Alanlar) {
+        for ($i = 0; $i -lt $Tekrar; $i++) {
+            $denenen++
+            $sw = [Diagnostics.Stopwatch]::StartNew()
+            $ipler = Resolve-UdpDns $Aday.V4 $Aday.Port $h
+            $sw.Stop()
+            if (-not $ipler) {
+                $basarisiz++
+                if ($i -eq 0) { $ilkYanitsiz = $true; break alanlar }
+                continue
+            }
+            if (Test-EngelAdresi $ipler) { $engelli = $true; break alanlar }
+            $sureler.Add($sw.Elapsed.TotalMilliseconds)
         }
-        $sonuc = @{ Ad = $aday.Ad; V4 = $aday.V4; V6 = $aday.V6; Port = $aday.Port; V6Etkin = $false }
-        if ($ipv6) {
-            $ip6 = Resolve-UdpDns $aday.V6 $aday.Port $Hedefler[0]
-            $sonuc.V6Etkin = [bool]($ip6 -and -not (Test-EngelAdresi $ip6))
-            if (-not $sonuc.V6Etkin) { Uyari "IPv6 DNS ($($aday.V6)) yanıt vermedi; IPv6 DNS yönlendirilmeyecek." }
-        }
-        return $sonuc
     }
-    return $null
+    $ist = $null
+    if ($sureler.Count -gt 0) { $ist = Get-Istatistik $sureler.ToArray() }
+    # Sorguların en az yarısı yanıtlanmalı; aralıklı paket kaybı olan sunucu tek başına elenmez.
+    $kullanilabilir = (-not $engelli) -and (-not $ilkYanitsiz) -and $null -ne $ist -and ($basarisiz * 2 -le $denenen)
+    return [pscustomobject]@{
+        Aday = $Aday
+        Denenen = $denenen
+        Basarisiz = $basarisiz
+        Engelli = $engelli
+        Kullanilabilir = $kullanilabilir
+        Ortanca = $(if ($ist) { $ist.Ortanca } else { $null })
+        P90 = $(if ($ist) { $ist.P90 } else { $null })
+        Sira = 0
+    }
+}
+
+function Get-DnsSiralamasi([string[]]$Hedefler, [int]$Tekrar = 3) {
+    # Kullanılabilir adaylar ortanca gecikmeye göre sıralanır; eşitlikte aday listesindeki sıra korunur.
+    $sira = 0
+    $olcumler = @(foreach ($a in $Script:DnsAdaylari) {
+        $o = Measure-DnsAdayi $a $Hedefler $Tekrar
+        $o.Sira = $sira++
+        $o
+    })
+    return [pscustomobject]@{
+        Kullanilabilir = @($olcumler | Where-Object { $_.Kullanilabilir } | Sort-Object Ortanca, Sira)
+        Kullanilamaz = @($olcumler | Where-Object { -not $_.Kullanilabilir })
+    }
+}
+
+function Invoke-DnsSiralamasi {
+    param([string[]]$Hedefler)
+    Baslik 'DNS sunucusu gecikmesi'
+    Yaz '  Adaylara UDP ile doğrudan sorulur; sistem DNS önbelleği devrede değildir. Hiçbir ayar değişmez.' 'DarkGray'
+    $sira = Get-DnsSiralamasi $Hedefler
+    $n = 0
+    foreach ($o in $sira.Kullanilabilir) {
+        $n++
+        $kayip = if ($o.Basarisiz) { " | $($o.Basarisiz)/$($o.Denenen) sorgu yanıtsız" } else { '' }
+        $satir = '{0}. {1} ({2}:{3}): ortanca {4:N0} ms, p90 {5:N0} ms{6}' -f $n, $o.Aday.Ad, $o.Aday.V4, $o.Aday.Port, $o.Ortanca, $o.P90, $kayip
+        if ($n -eq 1) { Basari $satir } else { Yaz "  $satir" }
+    }
+    foreach ($o in $sira.Kullanilamaz) {
+        $neden = if ($o.Engelli) { 'engelli adres döndürdü' } else { 'yanıt vermedi' }
+        Uyari "$($o.Aday.Ad) ($($o.Aday.V4):$($o.Aday.Port)): $neden"
+    }
+    if (@($sira.Kullanilabilir).Count -eq 0) { Hata 'Kullanılabilir DNS sunucusu bulunamadı.' }
+    return $sira
+}
+
+function Select-DnsAdayi($Siralama, $Mevcut) {
+    # Histerezis: mevcut sunucu hâlâ kullanılabilir ve en iyiden yeterince yavaş değilse değiştirilmez.
+    # Böylece küçük ölçüm farkları yüzünden sürekli sunucu değişmez.
+    $iyi = @($Siralama.Kullanilabilir)
+    if ($iyi.Count -eq 0) { return $null }
+    $en = $iyi[0]
+    if ($Mevcut) {
+        $m = $iyi | Where-Object { $_.Aday.V4 -eq $Mevcut.V4 -and [int]$_.Aday.Port -eq [int]$Mevcut.Port } | Select-Object -First 1
+        if ($m -and $m.Ortanca -le ($en.Ortanca * $Script:DnsHisterezisCarpan + $Script:DnsHisterezisMs)) { return $m }
+    }
+    return $en
+}
+
+function Find-DnsSunucusu([string[]]$Hedefler, $Mevcut = $null) {
+    $ipv6 = Test-GenelIPv6
+    $sira = Get-DnsSiralamasi $Hedefler
+    foreach ($k in $sira.Kullanilamaz) {
+        $neden = if ($k.Engelli) { 'engelli adres döndürdü' } else { 'kullanılamıyor' }
+        Uyari "$($k.Aday.Ad) ($($k.Aday.V4):$($k.Aday.Port)) $neden"
+    }
+    $secilen = Select-DnsAdayi $sira $Mevcut
+    if (-not $secilen) { return $null }
+    if (@($sira.Kullanilabilir).Count -gt 1) {
+        $ozet = @($sira.Kullanilabilir | ForEach-Object { '{0} {1:N0} ms' -f $_.Aday.Ad, $_.Ortanca }) -join ', '
+        Yaz "  DNS gecikmesi (ortanca): $ozet" 'DarkGray'
+    }
+    $aday = $secilen.Aday
+    $sonuc = @{ Ad = $aday.Ad; V4 = $aday.V4; V6 = $aday.V6; Port = $aday.Port; V6Etkin = $false }
+    if ($ipv6) {
+        $ip6 = Resolve-UdpDns $aday.V6 $aday.Port $Hedefler[0]
+        $sonuc.V6Etkin = [bool]($ip6 -and -not (Test-EngelAdresi $ip6))
+        if (-not $sonuc.V6Etkin) { Uyari "IPv6 DNS ($($aday.V6)) yanıt vermedi; IPv6 DNS yönlendirilmeyecek." }
+    }
+    return $sonuc
 }
 
 # --- Bağlantı testi -------------------------------------------------------
@@ -1210,7 +1307,10 @@ function Invoke-Bul {
 
         # 1) DNS: İSS DNS'i engelli adresi mi veriyor?
         Yaz '  DNS sunucusu seçiliyor...'
-        $dns = Find-DnsSunucusu $Hedefler
+        # Kayıtlı DNS varsa histerezis için mevcut olarak geç: küçük farklar yüzünden sunucu değişmesin.
+        $mevcutDns = $null
+        try { $kayitli = Read-Ayarlar; if ($kayitli -and $kayitli.dns) { $mevcutDns = $kayitli.dns } } catch { }
+        $dns = Find-DnsSunucusu $Hedefler $mevcutDns
         if ($dns) { Basari "DNS: $($dns.Ad) ($($dns.V4):$($dns.Port))" }
         else { Uyari 'Standart dışı porttaki DNS sunucularına ulaşılamadı, DNS yönlendirmesi kapalı kalacak.' }
 
@@ -2112,8 +2212,12 @@ function Main {
             'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
             'hiz'    {
-                if ($Kaydet -and $Gecmis) { throw '-Kaydet ve -Gecmis birlikte kullanılamaz.' }
-                if ($Gecmis) {
+                if (@($Kaydet, $Gecmis, $DnsSirala | Where-Object { $_ }).Count -gt 1) {
+                    throw '-Kaydet, -Gecmis ve -DnsSirala birlikte kullanılamaz.'
+                }
+                if ($DnsSirala) {
+                    Invoke-DnsSiralamasi -Hedefler $Script:Hedefler | Out-Null
+                } elseif ($Gecmis) {
                     Invoke-OlcumGecmisi
                 } else {
                     $ozetler = Invoke-Hiz -Hedefler $Script:Hedefler -Tekrar $Tekrar

@@ -1456,3 +1456,135 @@ Describe 'Sistem önerileri' {
         Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match 'okunamadı' }
     }
 }
+
+Describe 'Bekçi kararlılığı' {
+    $aday = @{ Ad = 'Test'; V4 = '192.0.2.53'; V6 = 'x'; Port = 53 }
+
+    It 'tek kayıp paketi tekrar deneyerek tolere eder' {
+        $script:DnsCagri = 0
+        Mock Resolve-UdpDns {
+            $script:DnsCagri++
+            if ($script:DnsCagri -eq 1) { return @() }
+            @('192.0.2.9')
+        }
+        Test-DnsSunucusu $aday @('a.example') 3 | Should Be $true
+        $script:DnsCagri | Should Be 2
+    }
+    It 'varsayılan tek denemede eski davranışı korur' {
+        Mock Resolve-UdpDns { @() }
+        Test-DnsSunucusu $aday @('a.example') | Should Be $false
+        Assert-MockCalled Resolve-UdpDns -Times 1 -Exactly -Scope It
+    }
+    It 'üç denemede de yanıt yoksa başarısız sayar' {
+        Mock Resolve-UdpDns { @() }
+        Test-DnsSunucusu $aday @('a.example', 'b.example') 3 | Should Be $false
+        Assert-MockCalled Resolve-UdpDns -Times 3 -Exactly -Scope It
+    }
+    It 'engelli adres döndüren sunucuyu tekrar denemeden eler' {
+        Mock Resolve-UdpDns { @('195.175.254.2') }
+        Test-DnsSunucusu $aday @('a.example') 3 | Should Be $false
+        Assert-MockCalled Resolve-UdpDns -Times 1 -Exactly -Scope It
+    }
+    It 'her hedefi ayrı doğrular' {
+        Mock Resolve-UdpDns { if ($Alan -eq 'b.example') { @() } else { @('192.0.2.9') } }
+        Test-DnsSunucusu $aday @('a.example', 'b.example') 2 | Should Be $false
+        Test-DnsSunucusu $aday @('a.example') 2 | Should Be $true
+    }
+
+    It 'aynı profil ve DNS ise Test-AyniAyar doğru döner, herhangi bir fark yanlış döner' {
+        $dns = @{ Ad = 'Quad9'; V4 = '9.9.9.10'; V6 = 'x'; Port = 9953; V6Etkin = $false }
+        $eski = [pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false; dns = [pscustomobject]@{ Ad = 'Quad9'; V4 = '9.9.9.10'; Port = [long]9953; V6Etkin = $false } }
+        $ayni = [pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false; dns = $dns }
+        Test-AyniAyar $eski $ayni | Should Be $true
+        Test-AyniAyar $eski ([pscustomobject]@{ profil = 'modern-7'; arg = '-7'; genel = $false; dns = $dns }) | Should Be $false
+        Test-AyniAyar $eski ([pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $true; dns = $dns }) | Should Be $false
+        $baskaDns = @{ Ad = 'OpenDNS'; V4 = '208.67.222.222'; V6 = 'x'; Port = 443; V6Etkin = $false }
+        Test-AyniAyar $eski ([pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false; dns = $baskaDns }) | Should Be $false
+        Test-AyniAyar $eski ([pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false; dns = $null }) | Should Be $false
+        Test-AyniAyar ([pscustomobject]@{ profil = 'a'; arg = '-x'; genel = $false; dns = $null }) ([pscustomobject]@{ profil = 'a'; arg = '-x'; genel = $false; dns = $null }) | Should Be $true
+        Test-AyniAyar $null $ayni | Should Be $false
+    }
+
+    Context 'yeniden profil araması' {
+        BeforeEach {
+            $script:BekciKayit = $null
+            $script:Guncellenen = @()
+            $script:Durum = [pscustomobject]@{
+                ardisikHata = 1; sonYenidenBul = $null; durduruldu = $null; durdurmaNedeni = $null
+                sonListe = (Get-Date).ToString('s'); sonListeDeneme = (Get-Date).ToString('s')
+            }
+            $script:MevcutAyar = [pscustomobject]@{
+                profil = 'modern-9'; arg = '-9'; genel = $false; hedefler = @('x.example')
+                dns = [pscustomobject]@{ Ad = 'Quad9'; V4 = '9.9.9.10'; Port = 9953; V6Etkin = $false }
+            }
+            Mock Get-Hizmet { [pscustomobject]@{ Status = 'Running' } }
+            Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ StartMode = 'Auto' } }
+            Mock Read-Ayarlar { $script:MevcutAyar }
+            Mock Read-BekciDurumu { $script:Durum }
+            Mock Save-Json { }
+            Mock Yaz { }
+            Mock Test-AgVar { $true }
+            Mock Test-DnsSunucusu { $true }
+            Mock Test-Internet { $true }
+            Mock Test-Hedefler { $s = [ordered]@{}; foreach ($h in $Hedefler) { $s[$h] = $false }; $s }
+            Mock Update-HizmetKomutu { $script:Guncellenen += $Ayar.profil }
+            Mock Update-Liste { $false }
+            Mock Start-Sleep { }
+        }
+        AfterEach { $Script:Sessiz = $false }
+
+        It 'arama aynı sonucu verirse hizmeti yeniden başlatmaz ve sayacı sıfırlar' {
+            Mock Invoke-Bul { [pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false; hedefler = @('x.example')
+                dns = @{ Ad = 'Quad9'; V4 = '9.9.9.10'; Port = 9953; V6Etkin = $false } } }
+            Invoke-Bekci
+            Assert-MockCalled Invoke-Bul -Times 1 -Exactly -Scope It
+            @($script:Guncellenen).Count | Should Be 0
+            $script:Durum.ardisikHata | Should Be 0
+            Assert-MockCalled Yaz -Scope It -ParameterFilter { $Metin -match 'hizmet yeniden başlatılmadı' }
+        }
+        It 'arama farklı profil bulursa uygular' {
+            Mock Invoke-Bul { [pscustomobject]@{ profil = 'modern-7'; arg = '-7'; genel = $false; hedefler = @('x.example')
+                dns = @{ Ad = 'Quad9'; V4 = '9.9.9.10'; Port = 9953; V6Etkin = $false } } }
+            Invoke-Bekci
+            @($script:Guncellenen) -join ',' | Should Be 'modern-7'
+            $script:Durum.ardisikHata | Should Be 0
+        }
+        It 'hizmeti 2. adım zaten yeniden başlattıysa aynı profil çıkınca tekrar başlatmaz' {
+            $script:Durum.durduruldu = (Get-Date).AddHours(-7).ToString('s')
+            $script:Durum.durdurmaNedeni = 'internet'
+            $script:Durum.ardisikHata = 99
+            Mock Get-Hizmet { [pscustomobject]@{ Status = 'Stopped' } }
+            Mock Start-Service { }
+            Mock Wait-HizmetDurumu { $true }
+            Mock Invoke-Bul { [pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false; hedefler = @('x.example')
+                dns = @{ Ad = 'Quad9'; V4 = '9.9.9.10'; Port = 9953; V6Etkin = $false } } }
+            Invoke-Bekci
+            Assert-MockCalled Start-Service -Times 1 -Exactly -Scope It
+            @($script:Guncellenen).Count | Should Be 0
+        }
+        It 'hizmet interneti bozduğu için durdurulduysa aynı profil çıksa da yeniden başlatmak için uygular' {
+            $script:InternetCagri = 0
+            Mock Test-Internet { $script:InternetCagri++; $script:InternetCagri -ge 2 }
+            Mock Stop-Hizmet { }
+            Mock Invoke-Bul { [pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false; hedefler = @('x.example')
+                dns = @{ Ad = 'Quad9'; V4 = '9.9.9.10'; Port = 9953; V6Etkin = $false } } }
+            Invoke-Bekci
+            @($script:Guncellenen) -join ',' | Should Be 'modern-9'
+            $script:Durum.durduruldu | Should BeNullOrEmpty
+        }
+        It 'DNS denetimini üç denemeyle yapar' {
+            $script:DnsDeneme = $null
+            Mock Test-DnsSunucusu { $script:DnsDeneme = $Deneme; $true }
+            Mock Test-Hedefler { $s = [ordered]@{}; foreach ($h in $Hedefler) { $s[$h] = $true }; $s }
+            Invoke-Bekci
+            $script:DnsDeneme | Should Be 3
+        }
+        It 'hedefler açılıyorsa profil aramaz' {
+            Mock Test-Hedefler { $s = [ordered]@{}; foreach ($h in $Hedefler) { $s[$h] = $true }; $s }
+            Mock Invoke-Bul { throw 'Arama yapılmamalı.' }
+            Invoke-Bekci
+            Assert-MockCalled Invoke-Bul -Times 0 -Exactly -Scope It
+            $script:Durum.ardisikHata | Should Be 0
+        }
+    }
+}

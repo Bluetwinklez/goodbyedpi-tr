@@ -11,8 +11,6 @@
         'PSReviewUnusedParameter'
         # Depo mevcut UTF-8 kodlama biçimini korur.
         'PSUseBOMForUnicodeEncodedFile'
-        # Mevcut en iyi çaba (best-effort) okuma blokları; ayrı temizlik adımında ele alınır.
-        'PSAvoidUsingEmptyCatchBlock'
     )
 }
 

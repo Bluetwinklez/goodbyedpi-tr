@@ -179,7 +179,10 @@ function Write-Gunluk([string]$Metin) {
             $son = Get-Content $Script:GunlukDosyasi -Tail 500 -Encoding UTF8
             Set-Content $Script:GunlukDosyasi $son -Encoding UTF8
         }
-    } catch { }
+    } catch {
+        # Günlük yazma hatası ana işlemi kesmemeli.
+        $null = $_
+    }
 }
 
 function Test-Yonetici {
@@ -248,7 +251,9 @@ function Save-Json($Nesne, [string]$Yol) {
             try {
                 ConvertFrom-JsonNesnesi $onceki | Out-Null
                 $gecerli = $true
-            } catch { }
+            } catch {
+                $gecerli = $false
+            }
             if ($gecerli) {
                 [IO.File]::Replace($gecici, $tamYol, "$tamYol.bak")
             } else {
@@ -1079,12 +1084,16 @@ function ConvertTo-OlcumKaydi($Ozetler, [int]$Tekrar) {
     try {
         $bilgi = Get-GdpiHizmetBilgisi
         $hizmet = if ($bilgi) { [string]$bilgi.State } else { 'NotInstalled' }
-    } catch { }
+    } catch {
+        $hizmet = 'Unknown'
+    }
     $profil = $null
     try {
         $ayar = Read-Ayarlar
         if ($ayar -and $ayar.profil -is [string]) { $profil = $ayar.profil }
-    } catch { }
+    } catch {
+        $profil = $null
+    }
     $hedefler = @(foreach ($o in @($Ozetler)) {
         $verim = $null
         if ($o.Verim -and $o.Bayt -and $o.Bayt.Ortanca -ge $Script:HizVerimMinBayt) { $verim = $o.Verim.Ortanca }
@@ -1562,17 +1571,21 @@ $Script:TunelBagdastiriciDeseni = 'TAP-Windows|WireGuard|Wintun|OpenVPN|NordLynx
 function Get-SistemDurumu {
     # Toplanamayan her bilgi $null kalır; öneri üretilirken atlanır.
     $d = [ordered]@{ FizikselAgBagdastiricilari = $null; TumAgBagdastiricilari = $null; GucPlaniGuid = $null; ProxyAcik = $null }
-    try { $d.FizikselAgBagdastiricilari = @(Get-NetAdapter -Physical -ErrorAction Stop) } catch { }
-    try { $d.TumAgBagdastiricilari = @(Get-NetAdapter -ErrorAction Stop) } catch { }
+    try { $d.FizikselAgBagdastiricilari = @(Get-NetAdapter -Physical -ErrorAction Stop) } catch { $d.FizikselAgBagdastiricilari = $null }
+    try { $d.TumAgBagdastiricilari = @(Get-NetAdapter -ErrorAction Stop) } catch { $d.TumAgBagdastiricilari = $null }
     try {
         $cikti = [string](& (Join-Path $Script:SistemDizini 'powercfg.exe') /getactivescheme 2>$null)
         $m = [regex]::Match($cikti, '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}')
         if ($m.Success) { $d.GucPlaniGuid = $m.Value.ToLowerInvariant() }
-    } catch { }
+    } catch {
+        $d.GucPlaniGuid = $null
+    }
     try {
         $ayar = Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings' -ErrorAction Stop
         $d.ProxyAcik = [bool]($ayar.ProxyEnable -eq 1)
-    } catch { }
+    } catch {
+        $d.ProxyAcik = $null
+    }
     return [pscustomobject]$d
 }
 
@@ -1719,7 +1732,10 @@ function Invoke-Bul {
             $kayitli = Read-Ayarlar
             if ($kayitli -and $kayitli.dns) { $mevcutDns = $kayitli.dns }
             if ($kayitli -and $kayitli.profil -is [string]) { $mevcutProfil = $kayitli.profil }
-        } catch { }
+        } catch {
+            $mevcutDns = $null
+            $mevcutProfil = $null
+        }
         $dns = Find-DnsSunucusu $Hedefler $mevcutDns
         if ($dns) { Basari "DNS: $($dns.Ad) ($($dns.V4):$($dns.Port))" }
         else { Uyari 'Standart dışı porttaki DNS sunucularına ulaşılamadı, DNS yönlendirmesi kapalı kalacak.' }
@@ -2614,7 +2630,7 @@ function Show-Menu {
 # --- Giriş ----------------------------------------------------------------
 
 function Main {
-    try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
+    try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { $null = $_ }
     $hedefVerildi = [bool]$Hedef
     $Script:Hedefler = $Hedef
     if (-not $Script:Hedefler) { $Script:Hedefler = $Script:VarsayilanHedefler }

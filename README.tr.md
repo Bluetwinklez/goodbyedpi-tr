@@ -54,6 +54,8 @@ Kurulumdan sonra indirdiğiniz klasörü silebilirsiniz; araç `C:\Program Files
 
 Profil araması DNS sunucusu seçerken artık her adayı doğrudan UDP ile ölçer (işletim sistemi önbelleği araya girmez), her hedefin ilk sorgusunun yanıtlanmasını, sorguların en az yarısının yanıtlanmasını ve hiçbirinin engelli adres döndürmemesini ister ve çalışan ilk sunucu yerine ortanca gecikmesi en düşük olanı seçer. Daha önce kaydedilmiş sunucu, en iyiden %20 ve 15 ms'den fazla yavaş değilse korunur; küçük farklar yüzünden sunucu değişmez. `hiz -DnsSirala` aynı sıralamayı hiçbir şeyi değiştirmeden gösterir.
 
+DPI engeli aşılması gerektiğinde profil araması artık çalışan ilk profilde durmaz. İlk çalışan profilden sonra en fazla iki profil daha dener (riskli `--set-ttl` profillerini hiç denemez) ve her birinde bağlantı kurulumundan ilk bayta kadar geçen süreyi (DNS hariç) ölçer. Başka bir profil en az 30 ms ve %20 daha hızlı değilse en güvenli çalışan profil korunur; kayıtlı profil de o kadar yavaş değilse korunur. Bir profilin hızı güvenilir ölçülemezse en güvenli çalışan profil kullanılır. Profil araması yönetici izni ve WinDivert sürücüsü gerektirdiğinden bu bölüm mock'lu otomatik testlerle doğrulandı; gerçek bir Windows makinesinde ayrıca denenmesi gerekir.
+
 Menüde **8** hizmeti duraklatır, **9** tekrar çalıştırır. Windows yeniden başlasa da duraklatma korunur ve bekçi denetimleri atlar.
 
 JSON ayarları kaydedilirken önceki geçerli nesne aynı klasörde `.bak` dosyasında saklanır. Ana dosya bozulursa yedek okunur ve uyarı gösterilir. Bir profili uygulamadan önce kurtarılan ayarları kontrol edin. Yedekleri asıl dosyayla aynı erişim izinleriyle koruyun.

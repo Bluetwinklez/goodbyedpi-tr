@@ -699,13 +699,17 @@ function Get-HizOlcumuSonucu([string]$Alan, [string]$Cikti, [int]$CikisKodu) {
     return [pscustomobject]$sonuc
 }
 
-function Invoke-HizOlcumu([string]$Alan, [int]$Sure = 10) {
+function Invoke-HizOlcumu([string]$Alan, [int]$Sure = 10, [string]$DohUrl) {
+    # DohUrl verilirse (profil seçiminde olduğu gibi) DNS engeli devre dışı kalır; yalnızca bağlantı ölçülür.
     $sunucu = Get-TestSunucusu $Alan
     $curl = Get-Curl
     if (-not $curl) { throw 'Windows curl.exe bulunamadı (Windows 10 1803+ gerekir).' }
-    # --disable ilk argüman olmalı. --range en çok 512 KB ister; sunucu yok sayarsa -m süreyi sınırlar.
-    $arg = @('--disable', '-s', '-o', 'NUL', '-w', $Script:HizBicimi, '--connect-timeout', '5', '-m', "$Sure",
+    # --range en çok 512 KB ister; sunucu yok sayarsa -m süreyi sınırlar.
+    $arg = @('-s', '-o', 'NUL', '-w', $Script:HizBicimi, '--connect-timeout', '5', '-m', "$Sure",
         '--range', '0-524287', "https://$sunucu/")
+    if ($DohUrl) { $arg = @('--doh-url', $DohUrl) + $arg }
+    # --disable ilk argüman olmalı; kullanıcı curlrc ayarları ölçümü değiştirmesin.
+    $arg = @('--disable') + $arg
     $cikti = & $curl @arg 2>$null
     return Get-HizOlcumuSonucu $Alan ([string]$cikti) $LASTEXITCODE
 }
@@ -1272,6 +1276,57 @@ function Test-SureGecti($Zaman, [TimeSpan]$Aralik) {
 
 # --- Komutlar -------------------------------------------------------------
 
+# --- Profil seçimi (ölçüme dayalı) ----------------------------------------
+
+# İlk çalışan profil bulunduktan sonra en çok bu kadar ek profil karşılaştırılır (süreyi sınırlamak için).
+$Script:ProfilKarsilastirmaSayisi = 2
+
+function Test-BelirginFark([double]$Eski, [double]$Yeni) {
+    # $Yeni, $Eski'den hem OlcumBelirginMs hem OlcumBelirginYuzde kadar daha hızlı mı?
+    if ($Eski -le 0) { return $false }
+    $fark = $Eski - $Yeni
+    return ($fark -ge $Script:OlcumBelirginMs) -and (($fark / $Eski * 100) -ge $Script:OlcumBelirginYuzde)
+}
+
+function Measure-ProfilHizi([string[]]$Hedefler, [string]$DohUrl, [int]$Tekrar = 3) {
+    # Çalışan geçici GoodbyeDPI altında, DNS hariç bağlantı kurulumundan ilk bayta kadar geçen süreyi ölçer.
+    # Örneklerin yarısından azı okunabildiyse sonuç güvenilmez sayılır ($null).
+    $sureler = New-Object 'System.Collections.Generic.List[double]'
+    $denenen = 0
+    foreach ($h in $Hedefler) {
+        for ($i = 0; $i -lt $Tekrar; $i++) {
+            $denenen++
+            try { $o = Invoke-HizOlcumu $h 8 $DohUrl } catch { continue }
+            if ($o.Erisim -and $null -ne $o.IlkBaytMs -and $null -ne $o.DnsMs) {
+                $sureler.Add([double]$o.IlkBaytMs - [double]$o.DnsMs)
+            }
+        }
+    }
+    $ortanca = $null
+    if ($sureler.Count -gt 0 -and $sureler.Count * 2 -ge $denenen) { $ortanca = (Get-Istatistik $sureler.ToArray()).Ortanca }
+    return [pscustomobject]@{ Ortanca = $ortanca; Denenen = $denenen; Olculen = $sureler.Count }
+}
+
+function Select-ProfilAdayi($Calisanlar, [string]$MevcutAd) {
+    # $Calisanlar güvenliden riskliye sıralı çalışan profillerdir (Profil, Ortanca). Güvenli olan, ancak
+    # başka biri belirgin hızlıysa bırakılır. Kayıtlı profil de belirgin yavaş değilse korunur (kararlılık).
+    $c = @($Calisanlar)
+    if ($c.Count -eq 0) { return $null }
+    $secilen = $c[0]
+    if ($null -ne $secilen.Ortanca) {
+        $en = $null
+        foreach ($a in $c) { if ($null -ne $a.Ortanca -and ($null -eq $en -or $a.Ortanca -lt $en.Ortanca)) { $en = $a } }
+        if ($en -and (Test-BelirginFark $secilen.Ortanca $en.Ortanca)) { $secilen = $en }
+    }
+    if ($MevcutAd) {
+        $m = $c | Where-Object { $_.Profil.Ad -eq $MevcutAd } | Select-Object -First 1
+        if ($m -and ($null -eq $m.Ortanca -or $null -eq $secilen.Ortanca -or -not (Test-BelirginFark $m.Ortanca $secilen.Ortanca))) {
+            $secilen = $m
+        }
+    }
+    return $secilen
+}
+
 function Invoke-Bul {
     param([string[]]$Hedefler, [switch]$Genel, [switch]$Kaydetme)
     Baslik 'Çalışan ayar aranıyor'
@@ -1309,7 +1364,12 @@ function Invoke-Bul {
         Yaz '  DNS sunucusu seçiliyor...'
         # Kayıtlı DNS varsa histerezis için mevcut olarak geç: küçük farklar yüzünden sunucu değişmesin.
         $mevcutDns = $null
-        try { $kayitli = Read-Ayarlar; if ($kayitli -and $kayitli.dns) { $mevcutDns = $kayitli.dns } } catch { }
+        $mevcutProfil = $null
+        try {
+            $kayitli = Read-Ayarlar
+            if ($kayitli -and $kayitli.dns) { $mevcutDns = $kayitli.dns }
+            if ($kayitli -and $kayitli.profil -is [string]) { $mevcutProfil = $kayitli.profil }
+        } catch { }
         $dns = Find-DnsSunucusu $Hedefler $mevcutDns
         if ($dns) { Basari "DNS: $($dns.Ad) ($($dns.V4):$($dns.Port))" }
         else { Uyari 'Standart dışı porttaki DNS sunucularına ulaşılamadı, DNS yönlendirmesi kapalı kalacak.' }
@@ -1324,27 +1384,45 @@ function Invoke-Bul {
             Yaz "  DPI engeli olan hedefler: $($engelli -join ', ')"
             $secilen = $null
             $asn = $null; if ($iss) { $asn = $iss.Asn }
+            # Güvenliden riskliye sıralı profiller denenir. İlk çalışan bulunduktan sonra yalnızca birkaç güvenli
+            # aday daha karşılaştırılır; --set-ttl içeren riskli profiller hız için denenmez.
+            $calisanlar = @()
+            $ekDenenen = 0
             foreach ($p in Get-SiraliProfiller $asn) {
+                if ($calisanlar.Count -gt 0) {
+                    if ($ekDenenen -ge $Script:ProfilKarsilastirmaSayisi -or $p.Arg -match 'set-ttl') { break }
+                    $ekDenenen++
+                }
                 $arg = Get-GdpiArgumanlari -Profil $p.Arg -ListeDosyalari $liste -Genel:$Genel
                 Yaz "  Deneniyor: $($p.Ad)  ($($p.Arg))" 'DarkGray'
                 $surec = $null
+                $hiz = $null
                 try {
                     $surec = Start-GdpiGecici $exe $arg
                     $sonuc = Test-Hedefler $engelli $doh
                     $tumu = -not ($sonuc.Values -contains $false)
                     $kontrol = Test-Https $Script:KontrolSiteleri[0]
+                    # Hız, geçici süreç hâlâ çalışırken ölçülür.
+                    if ($tumu -and $kontrol) { $hiz = Measure-ProfilHizi $engelli $doh }
                 } catch {
                     Uyari $_.Exception.Message
                     $tumu = $false; $kontrol = $false
                 } finally {
                     Stop-GdpiGecici $surec
                 }
-                if ($tumu -and $kontrol) { $secilen = $p; break }
+                if ($tumu -and $kontrol) {
+                    $calisanlar += [pscustomobject]@{ Profil = $p; Ortanca = $(if ($hiz) { $hiz.Ortanca } else { $null }) }
+                }
             }
-            if (-not $secilen) {
+            if ($calisanlar.Count -eq 0) {
                 Hata 'Hiçbir profil engeli aşamadı. İSS IP tabanlı engel uyguluyor olabilir; bu durumda VPN gerekir.'
                 return $null
             }
+            if ($calisanlar.Count -gt 1) {
+                $ozet = @($calisanlar | ForEach-Object { '{0} {1}' -f $_.Profil.Ad, $(if ($null -ne $_.Ortanca) { '{0:N0} ms' -f $_.Ortanca } else { 'ölçülemedi' }) }) -join ', '
+                Yaz "  Çalışan profiller (bağlantı sonrası ilk bayt, ortanca): $ozet" 'DarkGray'
+            }
+            $secilen = (Select-ProfilAdayi $calisanlar $mevcutProfil).Profil
             Basari "Çalışan profil: $($secilen.Ad)"
         }
 

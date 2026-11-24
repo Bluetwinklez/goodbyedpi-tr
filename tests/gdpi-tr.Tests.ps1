@@ -1742,3 +1742,92 @@ Describe 'hiz -Indirme' {
         (Format-IndirmeOzeti $ozet[0]) | Should Match '40[.,]00 Mbps'
     }
 }
+
+Describe 'alan-ekle, alan-sil ve alan-listele' {
+    It 'özel alan adı ekler, listeler, tekrar eklemede değişiklik yapmaz ve kaldırır' {
+        $kok = Join-Path ([IO.Path]::GetTempPath()) ('gdpi-alan-' + [guid]::NewGuid().ToString('N'))
+        $listeDir = Join-Path $kok 'listeler'
+        $eskiKurulum = $Script:KurulumDizini
+        try {
+            New-Item -ItemType Directory -Path $listeDir -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $listeDir 'turkiye.txt') -Value "discord.com`r`n" -Encoding UTF8
+            $Script:KurulumDizini = $kok
+            Mock Read-Ayarlar { $null }
+            Mock Get-Hizmet { $null }
+
+            (Update-KullaniciListesi -Ekle @('Ornek.Com')) | Should Be $true
+            $liste = Get-KullaniciAlanlari
+            $liste.Alanlar -contains 'ornek.com' | Should Be $true
+            (Get-Content -LiteralPath (Join-Path $kok 'liste.txt') -Encoding UTF8) -contains 'ornek.com' | Should Be $true
+
+            # Aynı alan adı tekrar eklenirse değişiklik yok
+            (Update-KullaniciListesi -Ekle @('ornek.com')) | Should Be $false
+
+            # Silme
+            (Update-KullaniciListesi -Sil @('ornek.com')) | Should Be $true
+            (Get-KullaniciAlanlari).Alanlar.Count | Should Be 0
+            (Update-KullaniciListesi -Sil @('ornek.com')) | Should Be $false
+        } finally {
+            $Script:KurulumDizini = $eskiKurulum
+            if (Test-Path -LiteralPath $kok) { Remove-Item -LiteralPath $kok -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'geçersiz alan adını dosyalara dokunmadan reddeder' {
+        $kok = Join-Path ([IO.Path]::GetTempPath()) ('gdpi-alan-bad-' + [guid]::NewGuid().ToString('N'))
+        $listeDir = Join-Path $kok 'listeler'
+        $eskiKurulum = $Script:KurulumDizini
+        try {
+            New-Item -ItemType Directory -Path $listeDir -Force | Out-Null
+            $Script:KurulumDizini = $kok
+            { Update-KullaniciListesi -Ekle @('https://kotu.example/yol') } | Should Throw 'Geçersiz alan adı'
+            (Test-Path -LiteralPath (Join-Path $listeDir 'kullanici.txt')) | Should Be $false
+        } finally {
+            $Script:KurulumDizini = $eskiKurulum
+            if (Test-Path -LiteralPath $kok) { Remove-Item -LiteralPath $kok -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'çalışan hizmet yeniden başlatılamazsa önceki kullanici.txt ve liste.txt dosyalarını geri yükler' {
+        $kok = Join-Path ([IO.Path]::GetTempPath()) ('gdpi-alan-rb-' + [guid]::NewGuid().ToString('N'))
+        $listeDir = Join-Path $kok 'listeler'
+        $eskiKurulum = $Script:KurulumDizini
+        try {
+            New-Item -ItemType Directory -Path $listeDir -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $listeDir 'turkiye.txt') -Value "discord.com`r`n" -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $listeDir 'kullanici.txt') -Value "eski.example`r`n" -Encoding UTF8
+            Set-Content -LiteralPath (Join-Path $kok 'liste.txt') -Value "discord.com`r`neski.example`r`n" -Encoding UTF8
+            $Script:KurulumDizini = $kok
+            $script:StartSay = 0
+            Mock Read-Ayarlar { $null }
+            Mock Get-Hizmet { [pscustomobject]@{ Status = if ($script:StartSay -eq 0) { 'Running' } else { 'Stopped' } } }
+            Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = 'Running'; StartMode = 'Auto' } }
+            Mock Stop-Hizmet { }
+            Mock Start-Service { $script:StartSay++ }
+            Mock Wait-HizmetDurumu {
+                if ($Durum -eq 'Stopped') { return $true }
+                return ($script:StartSay -ge 2)
+            }
+
+            { Update-KullaniciListesi -Ekle @('yeni.example') } | Should Throw 'Yeni listeyle hizmet başlatılamadı'
+            $kurtarilan = @(Read-AlanAdlari @((Join-Path $listeDir 'kullanici.txt')))
+            $kurtarilan -contains 'eski.example' | Should Be $true
+            $kurtarilan -contains 'yeni.example' | Should Be $false
+        } finally {
+            $Script:KurulumDizini = $eskiKurulum
+            if (Test-Path -LiteralPath $kok) { Remove-Item -LiteralPath $kok -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+    }
+
+    It 'JsonModu etkinken Yaz ekrana veya günlüğe yazmaz' {
+        $eskiJson = $Script:JsonModu
+        try {
+            $Script:JsonModu = $true
+            Mock Write-Gunluk { throw 'Yazmamalı.' }
+            Yaz 'deneme'
+            Assert-MockCalled Write-Gunluk -Times 0 -Exactly -Scope It
+        } finally {
+            $Script:JsonModu = $eskiJson
+        }
+    }
+}

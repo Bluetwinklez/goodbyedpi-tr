@@ -28,13 +28,16 @@
     .\gdpi-tr.ps1 hiz -Oneriler   hızı sınırlayabilecek sistem ayarlarını listele (salt okunur)
     .\gdpi-tr.ps1 hiz -AB         hizmet kapalı ve açıkken aynı hedefleri ölçüp farkı göster (yönetici gerekir)
     .\gdpi-tr.ps1 hiz -Indirme    isteğe bağlı gerçek indirme verimi testi (örnek başına en çok 5 MB, diske yazmaz)
+    .\gdpi-tr.ps1 alan-listele    kullanici.txt içindeki özel alan adlarını listele (yönetici gerekmez)
+    .\gdpi-tr.ps1 alan-ekle -Hedef ornek.com   özel listeye alan adı ekle ve etkinleştir
+    .\gdpi-tr.ps1 alan-sil -Hedef ornek.com    özel listeden alan adı kaldır ve etkinleştir
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'duraklat', 'devam', 'doktor', 'test', 'liste-guncelle', 'bekci', 'rapor', 'hiz')]
+    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'duraklat', 'devam', 'doktor', 'test', 'liste-guncelle', 'bekci', 'rapor', 'hiz', 'alan-ekle', 'alan-sil', 'alan-listele')]
     [string]$Komut = 'menu',
     [switch]$Eski,
     [switch]$Genel,
@@ -159,8 +162,10 @@ $Script:YenidenBulAraligi = New-TimeSpan -Hours 6
 # --- Yardımcılar ----------------------------------------------------------
 
 $Script:Sessiz = $false   # bekçi modunda ekrana yazmaz, günlüğe yazar
+$Script:JsonModu = $false # -Json modunda etkileşimli metinleri bastırır
 
 function Yaz([string]$Metin, [string]$Renk = 'Gray') {
+    if ($Script:JsonModu) { return }
     if ($Script:Sessiz) { Write-Gunluk $Metin.Trim() } else { Write-Host $Metin -ForegroundColor $Renk }
 }
 function Basari([string]$Metin) { Yaz "  [+] $Metin" 'Green' }
@@ -2450,6 +2455,163 @@ function Invoke-ListeGuncelle {
     if (Update-Liste) { Basari 'Liste güncellendi. Hizmet çalışıyorsa yeniden başlatıldı.' } else { Basari 'Liste zaten güncel.' }
 }
 
+function Get-KullaniciListeYolu {
+    $kurulu = Join-Path $Script:KurulumDizini 'listeler\kullanici.txt'
+    if (Test-Path -LiteralPath (Split-Path $kurulu)) { return $kurulu }
+    return (Join-Path $Script:KaynakDizini 'listeler\kullanici.txt')
+}
+
+function Get-KullaniciAlanlari {
+    $yol = Get-KullaniciListeYolu
+    $alanlar = if (Test-Path -LiteralPath $yol -PathType Leaf) { @(Read-AlanAdlari @($yol)) } else { @() }
+    return [pscustomobject]@{
+        Dosya   = $yol
+        Alanlar = $alanlar
+    }
+}
+
+function Update-KullaniciListesi {
+    param(
+        [string[]]$Ekle = @(),
+        [string[]]$Sil = @()
+    )
+    $listeDizini = Join-Path $Script:KurulumDizini 'listeler'
+    if (-not (Test-Path -LiteralPath $listeDizini)) { throw 'GoodbyeDPI-TR kurulu değil.' }
+    $hedef = Join-Path $listeDizini 'kullanici.txt'
+    $birlesik = Join-Path $Script:KurulumDizini 'liste.txt'
+
+    $normEkle = @($Ekle | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ } | Select-Object -Unique)
+    $normSil = @($Sil | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() } | Where-Object { $_ } | Select-Object -Unique)
+    foreach ($a in ($normEkle + $normSil)) {
+        if (-not (Test-AlanAdi $a)) { throw "Geçersiz alan adı: $a" }
+    }
+    if ($normEkle.Count -eq 0 -and $normSil.Count -eq 0) { throw 'En az bir alan adı belirtin (-Hedef ornek.com).' }
+
+    $mevcut = if (Test-Path -LiteralPath $hedef -PathType Leaf) { @(Read-AlanAdlari @($hedef)) } else { @() }
+    $yeni = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($a in $mevcut) {
+        if ($normSil -notcontains $a) { $yeni.Add($a) }
+    }
+    foreach ($a in $normEkle) {
+        if (-not $yeni.Contains($a)) { $yeni.Add($a) }
+    }
+    $yeniDizi = @($yeni | Sort-Object -Unique)
+    $mevcutDizi = @($mevcut | Sort-Object -Unique)
+    if (($yeniDizi -join "`n") -eq ($mevcutDizi -join "`n")) { return $false }
+
+    $ayar = Read-Ayarlar
+    $ekler = @(); if ($ayar) { $ekler = @($ayar.hedefler) }
+    $hizmet = Get-Hizmet $Script:HizmetAdi
+    if ($hizmet -and $hizmet.Status -notin 'Running', 'Stopped') {
+        throw "Hizmet kararlı bir durumda değil ($($hizmet.Status)); liste güncellenmedi."
+    }
+    $calisiyordu = $hizmet -and $hizmet.Status -eq 'Running'
+    $yenidenBaslat = $calisiyordu -and (Get-GdpiHizmetBilgisi).StartMode -ne 'Disabled'
+    if ($calisiyordu -and -not $yenidenBaslat) {
+        throw 'Duraklatılan hizmet hâlâ çalışıyor; liste güncellenmedi.'
+    }
+
+    $kimlik = [Guid]::NewGuid().ToString('N')
+    $dosyalar = foreach ($yol in $hedef, $birlesik) {
+        [pscustomobject]@{ Hedef = $yol; Gecici = "$yol.$kimlik.tmp"; Yedek = "$yol.$kimlik.bak"; Degisti = $false }
+    }
+    $durdurmaDenendi = $false
+    $yedekleriTut = $false
+    try {
+        $icerik = @('# Kullanıcı özel alan adı listesi (GoodbyeDPI-TR)') + $yeniDizi
+        [IO.File]::WriteAllText($dosyalar[0].Gecici, ($icerik -join "`r`n") + "`r`n", [Text.UTF8Encoding]::new($false))
+        $kaynaklar = @(Get-ListeDosyalari $Script:KurulumDizini | Where-Object { $_ -ne $hedef })
+        $kaynaklar += $dosyalar[0].Gecici
+        Write-Liste $kaynaklar $ekler $dosyalar[1].Gecici | Out-Null
+
+        if ($yenidenBaslat) {
+            $durdurmaDenendi = $true
+            Stop-Hizmet $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) { throw 'Hizmet durdurulamadı.' }
+        }
+        foreach ($dosya in $dosyalar) {
+            if ([IO.File]::Exists($dosya.Hedef)) {
+                [IO.File]::Replace($dosya.Gecici, $dosya.Hedef, $dosya.Yedek)
+            } else {
+                [IO.File]::Move($dosya.Gecici, $dosya.Hedef)
+            }
+            $dosya.Degisti = $true
+        }
+        if ($yenidenBaslat) {
+            Start-Service $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Yeni listeyle hizmet başlatılamadı.' }
+        }
+    } catch {
+        $ilkHata = $_
+        try {
+            $degisenler = @($dosyalar | Where-Object { $_.Degisti -or [IO.File]::Exists($_.Yedek) })
+            if ($durdurmaDenendi -and $degisenler) {
+                Stop-Hizmet $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Stopped' 2)) { throw 'Geri alma için hizmet durdurulamadı.' }
+            }
+            foreach ($dosya in $degisenler) {
+                if ([IO.File]::Exists($dosya.Yedek)) {
+                    if ([IO.File]::Exists($dosya.Hedef)) {
+                        [IO.File]::Replace($dosya.Yedek, $dosya.Hedef, [NullString]::Value)
+                    } else {
+                        [IO.File]::Move($dosya.Yedek, $dosya.Hedef)
+                    }
+                } else {
+                    [IO.File]::Delete($dosya.Hedef)
+                }
+            }
+            if ($durdurmaDenendi -and (Get-Hizmet $Script:HizmetAdi).Status -ne 'Running') {
+                Start-Service $Script:HizmetAdi
+                if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet önceki listeyle başlatılamadı.' }
+            }
+        } catch {
+            $yedekleriTut = $true
+            throw "Özel liste güncellenemedi: $($ilkHata.Exception.Message) Geri alma başarısız: $($_.Exception.Message)"
+        }
+        throw $ilkHata
+    } finally {
+        foreach ($dosya in $dosyalar) {
+            $temizlenecek = @($dosya.Gecici)
+            if (-not $yedekleriTut) { $temizlenecek += $dosya.Yedek }
+            foreach ($yol in $temizlenecek) {
+                if ([IO.File]::Exists($yol)) {
+                    try { [IO.File]::Delete($yol) } catch { Uyari "Geçici dosya silinemedi: $yol" }
+                }
+            }
+        }
+    }
+    return $true
+}
+
+function Invoke-AlanListele {
+    Baslik 'Özel alan adı listesi (kullanici.txt)'
+    $veri = Get-KullaniciAlanlari
+    if ($veri.Alanlar.Count -eq 0) {
+        Yaz '  Özel alan adı listesi boş.' 'DarkGray'
+    } else {
+        foreach ($a in $veri.Alanlar) { Yaz "  - $a" }
+    }
+    return $veri
+}
+
+function Invoke-AlanEkle([string[]]$Alanlar) {
+    Baslik 'Özel alan adı ekleme'
+    if (Update-KullaniciListesi -Ekle $Alanlar) {
+        Basari 'Özel liste güncellendi. Hizmet çalışıyorsa yeniden başlatıldı.'
+    } else {
+        Basari 'Belirtilen alan adları zaten özel listede.'
+    }
+}
+
+function Invoke-AlanSil([string[]]$Alanlar) {
+    Baslik 'Özel alan adı kaldırma'
+    if (Update-KullaniciListesi -Sil $Alanlar) {
+        Basari 'Özel listeden kaldırıldı. Hizmet çalışıyorsa yeniden başlatıldı.'
+    } else {
+        Uyari 'Belirtilen alan adları özel listede bulunamadı; değişiklik yapılmadı.'
+    }
+}
+
 function Invoke-Bekci {
     # Bekçi görevi tarafından çalıştırılır. Sessizdir, bekci.log'a yazar.
     $Script:Sessiz = $true
@@ -2573,6 +2735,62 @@ function Invoke-KilitliIslem([scriptblock]$Islem, [switch]$Bekci) {
     }
 }
 
+function Show-HizMenu {
+    while ($true) {
+        Yaz ''
+        Yaz 'Hız ve Teşhis Menüsü' 'Cyan'
+        Yaz '  1) Bağlantı süresi ölçümü'
+        Yaz '  2) A/B karşılaştırma (hizmet kapalı vs açık)'
+        Yaz '  3) DNS sunucularını gecikmeye göre sırala'
+        Yaz '  4) Hız önerileri (salt okunur)'
+        Yaz '  5) İsteğe bağlı gerçek indirme testi (en çok 5 MB/deneme)'
+        Yaz '  6) Kayıtlı ölçüm geçmişi'
+        Yaz '  0) Ana menüye dön'
+        $sec = Read-Host 'Seçim'
+        try {
+            switch ($sec) {
+                '1' { Invoke-Hiz -Hedefler $Script:Hedefler -Tekrar $Tekrar | Out-Null }
+                '2' { Invoke-KilitliIslem { Invoke-HizAb -Hedefler $Script:Hedefler -Tekrar $Tekrar | Out-Null } }
+                '3' { Invoke-DnsSiralamasi -Hedefler $Script:Hedefler | Out-Null }
+                '4' { Invoke-Oneriler | Out-Null }
+                '5' { Invoke-IndirmeHiz -Tekrar 3 | Out-Null }
+                '6' { Invoke-OlcumGecmisi }
+                '0' { return }
+            }
+        } catch {
+            Hata $_.Exception.Message
+        }
+    }
+}
+
+function Show-AlanMenu {
+    while ($true) {
+        Yaz ''
+        Yaz 'Özel Alan Adı Listesi' 'Cyan'
+        Yaz '  1) Özel alan adlarını listele'
+        Yaz '  2) Alan adı ekle'
+        Yaz '  3) Alan adı kaldır'
+        Yaz '  0) Ana menüye dön'
+        $sec = Read-Host 'Seçim'
+        try {
+            switch ($sec) {
+                '1' { Invoke-AlanListele | Out-Null }
+                '2' {
+                    $g = Read-Host 'Eklenecek alan adı (ör. ornek.com)'
+                    if ($g) { Invoke-KilitliIslem { Invoke-AlanEkle @($g) } }
+                }
+                '3' {
+                    $g = Read-Host 'Kaldırılacak alan adı (ör. ornek.com)'
+                    if ($g) { Invoke-KilitliIslem { Invoke-AlanSil @($g) } }
+                }
+                '0' { return }
+            }
+        } catch {
+            Hata $_.Exception.Message
+        }
+    }
+}
+
 function Show-Menu {
     while ($true) {
         Yaz ''
@@ -2587,7 +2805,8 @@ function Show-Menu {
         Yaz '  8) Duraklat'
         Yaz '  9) Devam et'
         Yaz '  10) Gizlilik korumalı teşhis raporu oluştur'
-        Yaz '  11) Bağlantı süresi ölçümü'
+        Yaz '  11) Hız ve teşhis menüsü (ölçüm, A/B, DNS, öneriler, indirme)'
+        Yaz '  12) Özel alan adı listesi (ekle / sil / listele)'
         Yaz '  0) Çıkış'
         $s = Read-Host 'Seçim'
         try {
@@ -2602,7 +2821,8 @@ function Show-Menu {
                 '8' { Invoke-KilitliIslem { Invoke-Duraklat } }
                 '9' { Invoke-KilitliIslem { Invoke-Devam } }
                 '10' { Invoke-Rapor }
-                '11' { Invoke-Hiz -Hedefler $Script:Hedefler | Out-Null }
+                '11' { Show-HizMenu }
+                '12' { Show-AlanMenu }
                 '0' { return }
             }
         } catch {
@@ -2620,15 +2840,56 @@ function Main {
     if (-not $Script:Hedefler) { $Script:Hedefler = $Script:VarsayilanHedefler }
 
     if ($Json) {
-        if ($Komut -ne 'durum') {
-            [Console]::Error.WriteLine('-Json yalnızca durum komutunda kullanılabilir.')
+        if ($Komut -notin @('durum', 'hiz', 'alan-listele')) {
+            [Console]::Error.WriteLine('-Json yalnızca durum, hiz ve alan-listele komutlarında kullanılabilir.')
             exit 1
         }
-        Get-DurumOzeti | ConvertTo-Json -Depth 5
-        return
+        if ($Komut -eq 'durum') {
+            Get-DurumOzeti | ConvertTo-Json -Depth 5
+            return
+        }
+        if ($Komut -eq 'alan-listele') {
+            Get-KullaniciAlanlari | ConvertTo-Json -Depth 4
+            return
+        }
+        if ($AB -and -not (Test-Yonetici)) {
+            [Console]::Error.WriteLine('hiz -AB yönetici olarak çalıştırılmalı.')
+            exit 1
+        }
+        $Script:JsonModu = $true
+        try {
+            if (@($Kaydet, $Gecmis, $DnsSirala, $Oneriler, $AB, $Indirme | Where-Object { $_ }).Count -gt 1) {
+                throw '-Kaydet, -Gecmis, -DnsSirala, -Oneriler, -AB ve -Indirme birlikte kullanılamaz.'
+            }
+            if ($IndirmeUrl -and -not $Indirme) {
+                throw '-IndirmeUrl yalnızca -Indirme ile birlikte kullanılabilir.'
+            }
+            $veri = if ($Indirme) {
+                @(Invoke-IndirmeHiz -Adresler $IndirmeUrl -Tekrar $Tekrar)
+            } elseif ($AB) {
+                Invoke-KilitliIslem { Invoke-HizAb -Hedefler $Script:Hedefler -Tekrar $Tekrar }
+            } elseif ($Oneriler) {
+                Invoke-Oneriler
+            } elseif ($DnsSirala) {
+                @(Invoke-DnsSiralamasi -Hedefler $Script:Hedefler)
+            } elseif ($Gecmis) {
+                @(Read-OlcumGecmisi)
+            } else {
+                $ozetler = @(Invoke-Hiz -Hedefler $Script:Hedefler -Tekrar $Tekrar)
+                if ($Kaydet) { Save-HizOlcumu $ozetler $Tekrar | Out-Null }
+                $ozetler
+            }
+            $veri | ConvertTo-Json -Depth 6
+            return
+        } catch {
+            [Console]::Error.WriteLine($_.Exception.Message)
+            exit 1
+        } finally {
+            $Script:JsonModu = $false
+        }
     }
 
-    if (($Komut -notin @('test', 'rapor', 'hiz') -or ($Komut -eq 'hiz' -and $AB)) -and -not (Test-Yonetici)) {
+    if (($Komut -notin @('test', 'rapor', 'hiz', 'alan-listele') -or ($Komut -eq 'hiz' -and $AB)) -and -not (Test-Yonetici)) {
         Hata 'Bu araç yönetici olarak çalıştırılmalı (GoodbyeDPI-TR.cmd dosyasını kullanın).'
         exit 1
     }
@@ -2666,6 +2927,15 @@ function Main {
                     $ozetler = Invoke-Hiz -Hedefler $Script:Hedefler -Tekrar $Tekrar
                     if ($Kaydet) { Save-HizOlcumu $ozetler $Tekrar | Out-Null }
                 }
+            }
+            'alan-listele' { Invoke-AlanListele | Out-Null }
+            'alan-ekle' {
+                if (-not $hedefVerildi) { throw 'Eklenecek alan adını -Hedef ile belirtin (ör. alan-ekle -Hedef ornek.com).' }
+                Invoke-KilitliIslem { Invoke-AlanEkle $Hedef }
+            }
+            'alan-sil' {
+                if (-not $hedefVerildi) { throw 'Kaldırılacak alan adını -Hedef ile belirtin (ör. alan-sil -Hedef ornek.com).' }
+                Invoke-KilitliIslem { Invoke-AlanSil $Hedef }
             }
             'liste-guncelle' { Invoke-KilitliIslem { Invoke-ListeGuncelle } }
             'bekci'  { Invoke-KilitliIslem { Invoke-Bekci } -Bekci }

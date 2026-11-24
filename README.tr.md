@@ -40,6 +40,9 @@ Komut satırından (yönetici PowerShell):
 .\gdpi-tr.ps1 hiz -Oneriler         # hızı sınırlayabilecek sistem ayarlarını listele (salt okunur)
 .\gdpi-tr.ps1 hiz -AB               # hizmet kapalı ve açıkken aynı hedefleri ölçüp farkı göster (yönetici gerekir)
 .\gdpi-tr.ps1 hiz -Indirme          # isteğe bağlı gerçek indirme testi (en çok 5 MB/deneme; isteğe bağlı -IndirmeUrl)
+.\gdpi-tr.ps1 alan-listele          # kullanici.txt içindeki özel alan adlarını listele (-Json destekler)
+.\gdpi-tr.ps1 alan-ekle -Hedef ornek.com   # özel listeye alan adı ekle ve hizmeti yenile
+.\gdpi-tr.ps1 alan-sil -Hedef ornek.com    # özel listeden alan adı kaldır ve hizmeti yenile
 .\gdpi-tr.ps1 duraklat              # yeniden başlatma sonrasında da duraklat
 .\gdpi-tr.ps1 devam                 # hizmeti yeniden etkinleştir
 .\gdpi-tr.ps1 liste-guncelle        # engelli alan adı listesini güncelle

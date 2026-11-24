@@ -22,6 +22,9 @@ The command names remain Turkish:
 .\gdpi-tr.ps1 hiz -Oneriler   # List system settings that may limit speed (read-only)
 .\gdpi-tr.ps1 hiz -AB         # Compare the same targets with the service off and on (needs elevation)
 .\gdpi-tr.ps1 hiz -Indirme    # Opt-in download throughput test (up to 5 MB/run to NUL; optional -IndirmeUrl)
+.\gdpi-tr.ps1 alan-listele    # List custom domains in kullanici.txt (no elevation; supports -Json)
+.\gdpi-tr.ps1 alan-ekle -Hedef example.com  # Add a custom domain and refresh the active list
+.\gdpi-tr.ps1 alan-sil -Hedef example.com   # Remove a custom domain and refresh the active list
 .\gdpi-tr.ps1 duraklat        # Pause the service across reboots
 .\gdpi-tr.ps1 devam           # Resume the service
 .\gdpi-tr.ps1 liste-guncelle  # Refresh domain lists

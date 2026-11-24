@@ -1095,3 +1095,134 @@ Describe 'Ölçüm geçmişi' {
         Assert-MockCalled Yaz -Scope It -ParameterFilter { $Metin -match 'a.example: ilk bayt 100 ms \(3/3 başarılı\)' }
     }
 }
+
+Describe 'DNS gecikme sıralaması' {
+    function Yeni-Siralama($Iyi, $Kotu = @()) {
+        [pscustomobject]@{ Kullanilabilir = @($Iyi); Kullanilamaz = @($Kotu) }
+    }
+    function Yeni-Olcum($Ad, $V4, $Port, $Ortanca, $Engelli = $false) {
+        [pscustomobject]@{
+            Aday = @{ Ad = $Ad; V4 = $V4; V6 = '2001:db8::1'; Port = $Port }
+            Denenen = 3; Basarisiz = 0; Engelli = $Engelli; Kullanilabilir = (-not $Engelli)
+            Ortanca = $Ortanca; P90 = $Ortanca; Sira = 0
+        }
+    }
+
+    It 'ilk sorgusu yanıtsız adayı kullanılamaz sayar ve ölçümü orada keser' {
+        Mock Resolve-UdpDns { @() }
+        $aday = @{ Ad = 'Olu'; V4 = '192.0.2.1'; V6 = 'x'; Port = 53 }
+        $o = Measure-DnsAdayi $aday @('a.example', 'b.example') 3
+        $o.Kullanilabilir | Should Be $false
+        $o.Denenen | Should Be 1
+        Assert-MockCalled Resolve-UdpDns -Times 1 -Exactly -Scope It
+    }
+    It 'engelli adres döndüren adayı eler' {
+        Mock Resolve-UdpDns { @('195.175.254.2') }
+        $aday = @{ Ad = 'Zehirli'; V4 = '192.0.2.2'; V6 = 'x'; Port = 53 }
+        $o = Measure-DnsAdayi $aday @('a.example') 3
+        $o.Engelli | Should Be $true
+        $o.Kullanilabilir | Should Be $false
+    }
+    It 'aralıklı paket kaybını (yarıdan azı) tolere eder, ortancayı yanıtlananlardan hesaplar' {
+        $script:DnsCagri = 0
+        Mock Resolve-UdpDns {
+            $script:DnsCagri++
+            if ($script:DnsCagri -eq 2) { return @() }
+            @('192.0.2.9')
+        }
+        $aday = @{ Ad = 'Kayipli'; V4 = '192.0.2.3'; V6 = 'x'; Port = 53 }
+        $o = Measure-DnsAdayi $aday @('a.example') 4
+        $o.Denenen | Should Be 4
+        $o.Basarisiz | Should Be 1
+        $o.Kullanilabilir | Should Be $true
+        $o.Ortanca | Should Not BeNullOrEmpty
+    }
+    It 'sorguların yarısından fazlası yanıtsızsa adayı kullanılamaz sayar' {
+        $script:DnsCagri = 0
+        Mock Resolve-UdpDns {
+            $script:DnsCagri++
+            if ($script:DnsCagri -eq 1) { return @('192.0.2.9') }
+            @()
+        }
+        $aday = @{ Ad = 'Cok-kayipli'; V4 = '192.0.2.4'; V6 = 'x'; Port = 53 }
+        $o = Measure-DnsAdayi $aday @('a.example') 4
+        $o.Basarisiz | Should Be 3
+        $o.Kullanilabilir | Should Be $false
+    }
+    It 'adayları ortanca gecikmeye göre sıralar, yanıtsızı ayırır' {
+        Mock Resolve-UdpDns {
+            if ($Sunucu -eq '9.9.9.10') { Start-Sleep -Milliseconds 90; return @('192.0.2.9') }
+            if ($Sunucu -eq '208.67.222.222') { Start-Sleep -Milliseconds 5; return @('192.0.2.9') }
+            @()
+        }
+        $s = Get-DnsSiralamasi @('a.example') 2
+        @($s.Kullanilabilir).Count | Should Be 2
+        $s.Kullanilabilir[0].Aday.Ad | Should Be 'OpenDNS'
+        $s.Kullanilabilir[1].Aday.Ad | Should Be 'Quad9 (filtresiz)'
+        @($s.Kullanilamaz).Count | Should Be 1
+        $s.Kullanilamaz[0].Aday.Ad | Should Be 'Yandex'
+    }
+    It 'mevcut sunucu en iyiden yeterince yavaş değilse değiştirmez (histerezis)' {
+        $hizli = Yeni-Olcum 'Hizli' '1.1.1.1' 53 50
+        $mevcut = Yeni-Olcum 'Mevcut' '2.2.2.2' 443 74
+        $secim = Select-DnsAdayi (Yeni-Siralama @($hizli, $mevcut)) ([pscustomobject]@{ V4 = '2.2.2.2'; Port = [long]443 })
+        $secim.Aday.Ad | Should Be 'Mevcut'
+    }
+    It 'mevcut sunucu eşiği aşacak kadar yavaşsa en hızlıya geçer' {
+        $hizli = Yeni-Olcum 'Hizli' '1.1.1.1' 53 50
+        $mevcut = Yeni-Olcum 'Mevcut' '2.2.2.2' 443 76
+        $secim = Select-DnsAdayi (Yeni-Siralama @($hizli, $mevcut)) ([pscustomobject]@{ V4 = '2.2.2.2'; Port = 443 })
+        $secim.Aday.Ad | Should Be 'Hizli'
+    }
+    It 'mevcut sunucu kullanılamıyorsa veya yoksa en hızlıyı seçer; hiç aday yoksa $null döner' {
+        $hizli = Yeni-Olcum 'Hizli' '1.1.1.1' 53 50
+        (Select-DnsAdayi (Yeni-Siralama @($hizli)) ([pscustomobject]@{ V4 = '9.9.9.9'; Port = 53 })).Aday.Ad | Should Be 'Hizli'
+        (Select-DnsAdayi (Yeni-Siralama @($hizli)) $null).Aday.Ad | Should Be 'Hizli'
+        Select-DnsAdayi (Yeni-Siralama @()) $null | Should BeNullOrEmpty
+    }
+    It 'Find-DnsSunucusu en hızlı adayı döndürür, kullanılamayanı uyarıyla bildirir' {
+        Mock Test-GenelIPv6 { $false }
+        Mock Uyari { }
+        Mock Yaz { }
+        Mock Get-DnsSiralamasi {
+            Yeni-Siralama @((Yeni-Olcum 'Hizli' '1.1.1.1' 53 10), (Yeni-Olcum 'Yavas' '2.2.2.2' 443 40)) @(
+                [pscustomobject]@{ Aday = @{ Ad = 'Olu'; V4 = '3.3.3.3'; Port = 1 }; Engelli = $false },
+                [pscustomobject]@{ Aday = @{ Ad = 'Zehirli'; V4 = '4.4.4.4'; Port = 2 }; Engelli = $true })
+        }
+        $d = Find-DnsSunucusu @('a.example')
+        $d.Ad | Should Be 'Hizli'
+        $d.V4 | Should Be '1.1.1.1'
+        $d.Port | Should Be 53
+        $d.V6Etkin | Should Be $false
+        Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match '^Olu \(3.3.3.3:1\) kullanılamıyor' }
+        Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match '^Zehirli .* engelli adres döndürdü' }
+    }
+    It 'Find-DnsSunucusu mevcut sunucuyu histerezisle korur ve aday yoksa $null döner' {
+        Mock Test-GenelIPv6 { $false }
+        Mock Uyari { }
+        Mock Yaz { }
+        Mock Get-DnsSiralamasi {
+            Yeni-Siralama @((Yeni-Olcum 'Hizli' '1.1.1.1' 53 50), (Yeni-Olcum 'Mevcut' '2.2.2.2' 443 60))
+        }
+        (Find-DnsSunucusu @('a.example') ([pscustomobject]@{ V4 = '2.2.2.2'; Port = 443 })).Ad | Should Be 'Mevcut'
+        Mock Get-DnsSiralamasi { Yeni-Siralama @() }
+        Find-DnsSunucusu @('a.example') | Should BeNullOrEmpty
+    }
+    It 'hiz -DnsSirala çıktısı sıralamayı ve kullanılamayanları gösterir, ayar değiştirmez' {
+        Mock Baslik { }
+        Mock Yaz { }
+        Mock Basari { }
+        Mock Uyari { }
+        Mock Hata { }
+        Mock Save-Ayarlar { throw 'Ayar yazılmamalı.' }
+        Mock Get-DnsSiralamasi {
+            Yeni-Siralama @((Yeni-Olcum 'Hizli' '1.1.1.1' 53 10), (Yeni-Olcum 'Yavas' '2.2.2.2' 443 40)) @(
+                [pscustomobject]@{ Aday = @{ Ad = 'Olu'; V4 = '3.3.3.3'; Port = 1 }; Engelli = $false })
+        }
+        Invoke-DnsSiralamasi -Hedefler @('a.example') | Out-Null
+        Assert-MockCalled Basari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match '^1\. Hizli \(1.1.1.1:53\): ortanca 10 ms' }
+        Assert-MockCalled Yaz -Scope It -ParameterFilter { $Metin -match '2\. Yavas' }
+        Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match 'Olu .* yanıt vermedi' }
+        Assert-MockCalled Hata -Times 0 -Exactly -Scope It
+    }
+}

@@ -26,6 +26,7 @@
     .\gdpi-tr.ps1 hiz -Gecmis     kayıtlı ölçümleri listele
     .\gdpi-tr.ps1 hiz -DnsSirala  DNS sunucu adaylarını gecikmeye göre sırala (hiçbir şeyi değiştirmez)
     .\gdpi-tr.ps1 hiz -Oneriler   hızı sınırlayabilecek sistem ayarlarını listele (salt okunur)
+    .\gdpi-tr.ps1 hiz -AB         hizmet kapalı ve açıkken aynı hedefleri ölçüp farkı göster (yönetici gerekir)
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
 #>
@@ -43,7 +44,8 @@ param(
     [switch]$Kaydet,
     [switch]$Gecmis,
     [switch]$DnsSirala,
-    [switch]$Oneriler
+    [switch]$Oneriler,
+    [switch]$AB
 )
 
 $ErrorActionPreference = 'Stop'
@@ -811,6 +813,131 @@ function Invoke-Hiz {
         foreach ($hata in $ozet.Hatalar) { Yaz "      $($hata.Say) başarısız: $($hata.Durum)" 'DarkGray' }
     }
     return $ozetler
+}
+
+function Compare-HizAb($KapaliOzetler, $AcikOzetler) {
+    # Aynı hedefler için hizmet kapalı (A) ve hizmet açık (B) ölçümlerini karşılaştırır.
+    foreach ($a in @($AcikOzetler)) {
+        $k = @($KapaliOzetler | Where-Object { $_.Alan -eq $a.Alan }) | Select-Object -First 1
+        if (-not $k) { continue }
+        $kMs = Get-OrtancaDegeri $k.IlkBayt
+        $aMs = Get-OrtancaDegeri $a.IlkBayt
+        $fark = $null
+        $yuzde = $null
+        $sonuc = 'karsilastirilamadi'
+        if ($k.Basarili -eq 0 -and $a.Basarili -gt 0) {
+            $sonuc = 'erisim-acildi'
+        } elseif ($k.Basarili -gt 0 -and $a.Basarili -eq 0) {
+            $sonuc = 'erisim-kayboldu'
+        } elseif ($k.Basarili -eq 0 -and $a.Basarili -eq 0) {
+            $sonuc = 'ikisi-de-basarisiz'
+        } elseif ($null -ne $kMs -and $null -ne $aMs -and [double]$kMs -gt 0) {
+            $fark = [Math]::Round([double]$aMs - [double]$kMs, 1)
+            $yuzde = [Math]::Round($fark / [double]$kMs * 100, 0)
+            if ([Math]::Abs($fark) -ge $Script:OlcumBelirginMs -and [Math]::Abs($yuzde) -ge $Script:OlcumBelirginYuzde) {
+                $sonuc = if ($fark -lt 0) { 'daha-hizli' } else { 'daha-yavas' }
+            } else {
+                $sonuc = 'belirgin-degil'
+            }
+        }
+        [pscustomobject]@{
+            Alan         = $a.Alan
+            KapaliMs     = $kMs
+            AcikMs       = $aMs
+            FarkMs       = $fark
+            Yuzde        = $yuzde
+            Sonuc        = $sonuc
+            KapaliBasari = "$($k.Basarili)/$($k.Deneme)"
+            AcikBasari   = "$($a.Basarili)/$($a.Deneme)"
+        }
+    }
+}
+
+function Format-HizAbFarki($Fark) {
+    $basari = ''
+    if ($Fark.KapaliBasari -ne $Fark.AcikBasari) { $basari = " | başarı $($Fark.KapaliBasari) -> $($Fark.AcikBasari)" }
+    switch ($Fark.Sonuc) {
+        'erisim-acildi' {
+            $sure = if ($null -ne $Fark.AcikMs) { (', ilk bayt {0:N0} ms' -f $Fark.AcikMs) } else { '' }
+            return "$($Fark.Alan): erişim açıldı (kapalı $($Fark.KapaliBasari) -> açık $($Fark.AcikBasari)$sure)"
+        }
+        'erisim-kayboldu' {
+            return "$($Fark.Alan): erişim kayboldu (kapalı $($Fark.KapaliBasari) -> açık $($Fark.AcikBasari))"
+        }
+        'ikisi-de-basarisiz' {
+            return "$($Fark.Alan): her iki durumda da erişilemedi (kapalı $($Fark.KapaliBasari), açık $($Fark.AcikBasari))"
+        }
+        'karsilastirilamadi' {
+            return "$($Fark.Alan): karşılaştırılamadı (süre eksik)$basari"
+        }
+        default {
+            $metin = '{0}: ilk bayt {1:N0} -> {2:N0} ms ({3:+0;-0;0}%' -f $Fark.Alan, $Fark.KapaliMs, $Fark.AcikMs, $Fark.Yuzde
+            switch ($Fark.Sonuc) {
+                'daha-hizli' { $metin += ', daha hızlı)' }
+                'daha-yavas' { $metin += ', daha yavaş)' }
+                default { $metin += ', fark küçük; ölçüm gürültüsü olabilir)' }
+            }
+            return $metin + $basari
+        }
+    }
+}
+
+function Invoke-HizAb {
+    param([string[]]$Hedefler, [int]$Tekrar = 5)
+    $hizmet = Get-Hizmet $Script:HizmetAdi
+    if (-not $hizmet) { throw 'GoodbyeDPI-TR hizmeti kurulu değil; A/B ölçümü için önce kurun.' }
+    $bilgi = Get-GdpiHizmetBilgisi
+    if ($bilgi -and $bilgi.StartMode -eq 'Disabled') {
+        throw 'Hizmet duraklatılmış; A/B ölçümü için önce devam komutuyla etkinleştirin.'
+    }
+    $baslangicAcik = ($hizmet.Status -eq 'Running')
+    $kapaliOzetler = @()
+    $acikOzetler = @()
+
+    Baslik 'A/B bağlantı ölçümü (hizmet kapalı ve açık)'
+    Yaz '  Aynı hedefler hizmet kapalıyken ve açıkken ölçülür; işlem sonunda hizmet eski durumuna döndürülür.' 'DarkGray'
+
+    try {
+        if ($baslangicAcik) {
+            Yaz '  [1/2] Hizmet açıkken ölçülüyor...' 'Cyan'
+            $acikOzetler = @(Invoke-Hiz -Hedefler $Hedefler -Tekrar $Tekrar)
+            Yaz '  [2/2] Hizmet geçici olarak durdurulup kapalı durumda ölçülüyor...' 'Cyan'
+            Stop-Hizmet $Script:HizmetAdi
+            Start-Sleep -Seconds 2
+            $kapaliOzetler = @(Invoke-Hiz -Hedefler $Hedefler -Tekrar $Tekrar)
+        } else {
+            Yaz '  [1/2] Hizmet kapalıyken ölçülüyor...' 'Cyan'
+            $kapaliOzetler = @(Invoke-Hiz -Hedefler $Hedefler -Tekrar $Tekrar)
+            Yaz '  [2/2] Hizmet geçici olarak başlatılıp açık durumda ölçülüyor...' 'Cyan'
+            Start-Service $Script:HizmetAdi
+            if (-not (Wait-HizmetDurumu $Script:HizmetAdi 'Running')) { throw 'Hizmet A/B ölçümü için başlatılamadı.' }
+            Start-Sleep -Seconds 2
+            $acikOzetler = @(Invoke-Hiz -Hedefler $Hedefler -Tekrar $Tekrar)
+        }
+    } finally {
+        $son = Get-Hizmet $Script:HizmetAdi
+        if ($baslangicAcik -and $son -and $son.Status -ne 'Running') {
+            Start-Service $Script:HizmetAdi -ErrorAction SilentlyContinue
+            Wait-HizmetDurumu $Script:HizmetAdi 'Running' | Out-Null
+        } elseif (-not $baslangicAcik -and $son -and $son.Status -eq 'Running') {
+            Stop-Hizmet $Script:HizmetAdi
+        }
+    }
+
+    $farklar = @(Compare-HizAb $kapaliOzetler $acikOzetler)
+    Baslik 'A/B karşılaştırma özeti (kapalı -> açık)'
+    foreach ($f in $farklar) {
+        $satir = Format-HizAbFarki $f
+        if ($f.Sonuc -in @('erisim-acildi', 'daha-hizli')) { Basari $satir }
+        elseif ($f.Sonuc -in @('erisim-kayboldu', 'daha-yavas', 'ikisi-de-basarisiz')) { Uyari $satir }
+        else { Yaz "  $satir" }
+    }
+    return [pscustomobject]@{
+        BaslangicDurumu = if ($baslangicAcik) { 'Running' } else { 'Stopped' }
+        Kapali          = $kapaliOzetler
+        Acik            = $acikOzetler
+        Farklar         = $farklar
+    }
 }
 
 # --- Ölçüm geçmişi --------------------------------------------------------
@@ -2375,7 +2502,7 @@ function Main {
         return
     }
 
-    if ($Komut -notin @('test', 'rapor', 'hiz') -and -not (Test-Yonetici)) {
+    if (($Komut -notin @('test', 'rapor', 'hiz') -or ($Komut -eq 'hiz' -and $AB)) -and -not (Test-Yonetici)) {
         Hata 'Bu araç yönetici olarak çalıştırılmalı (GoodbyeDPI-TR.cmd dosyasını kullanın).'
         exit 1
     }
@@ -2393,10 +2520,12 @@ function Main {
             'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
             'hiz'    {
-                if (@($Kaydet, $Gecmis, $DnsSirala, $Oneriler | Where-Object { $_ }).Count -gt 1) {
-                    throw '-Kaydet, -Gecmis, -DnsSirala ve -Oneriler birlikte kullanılamaz.'
+                if (@($Kaydet, $Gecmis, $DnsSirala, $Oneriler, $AB | Where-Object { $_ }).Count -gt 1) {
+                    throw '-Kaydet, -Gecmis, -DnsSirala, -Oneriler ve -AB birlikte kullanılamaz.'
                 }
-                if ($Oneriler) {
+                if ($AB) {
+                    Invoke-KilitliIslem { Invoke-HizAb -Hedefler $Script:Hedefler -Tekrar $Tekrar | Out-Null }
+                } elseif ($Oneriler) {
                     Invoke-Oneriler | Out-Null
                 } elseif ($DnsSirala) {
                     Invoke-DnsSiralamasi -Hedefler $Script:Hedefler | Out-Null

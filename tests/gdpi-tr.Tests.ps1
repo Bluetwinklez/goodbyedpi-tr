@@ -1588,3 +1588,109 @@ Describe 'Bekçi kararlılığı' {
         }
     }
 }
+
+Describe 'hiz -AB' {
+    It 'Compare-HizAb erişim açılmasını, kaybolmasını ve belirgin süre farkını ayırır' {
+        $kapali = @(
+            [pscustomobject]@{ Alan = 'engel.example'; Deneme = 3; Basarili = 0; IlkBayt = $null }
+            [pscustomobject]@{ Alan = 'bozulan.example'; Deneme = 3; Basarili = 3; IlkBayt = [pscustomobject]@{ Ortanca = 100.0 } }
+            [pscustomobject]@{ Alan = 'hizlanan.example'; Deneme = 3; Basarili = 3; IlkBayt = [pscustomobject]@{ Ortanca = 200.0 } }
+            [pscustomobject]@{ Alan = 'benzer.example'; Deneme = 3; Basarili = 3; IlkBayt = [pscustomobject]@{ Ortanca = 200.0 } }
+        )
+        $acik = @(
+            [pscustomobject]@{ Alan = 'engel.example'; Deneme = 3; Basarili = 3; IlkBayt = [pscustomobject]@{ Ortanca = 140.0 } }
+            [pscustomobject]@{ Alan = 'bozulan.example'; Deneme = 3; Basarili = 0; IlkBayt = $null }
+            [pscustomobject]@{ Alan = 'hizlanan.example'; Deneme = 3; Basarili = 3; IlkBayt = [pscustomobject]@{ Ortanca = 120.0 } }
+            [pscustomobject]@{ Alan = 'benzer.example'; Deneme = 3; Basarili = 3; IlkBayt = [pscustomobject]@{ Ortanca = 190.0 } }
+        )
+        $f = @(Compare-HizAb $kapali $acik)
+        $f.Count | Should Be 4
+        ($f | Where-Object { $_.Alan -eq 'engel.example' }).Sonuc | Should Be 'erisim-acildi'
+        ($f | Where-Object { $_.Alan -eq 'bozulan.example' }).Sonuc | Should Be 'erisim-kayboldu'
+        ($f | Where-Object { $_.Alan -eq 'hizlanan.example' }).Sonuc | Should Be 'daha-hizli'
+        ($f | Where-Object { $_.Alan -eq 'benzer.example' }).Sonuc | Should Be 'belirgin-degil'
+        (Format-HizAbFarki ($f | Where-Object { $_.Alan -eq 'engel.example' })) | Should Match 'erişim açıldı'
+    }
+
+    It 'hizmet kurulu değilse veya duraklatılmışsa reddeder ve hizmete dokunmaz' {
+        Mock Stop-Hizmet { throw 'Durdurmamalı.' }
+        Mock Start-Service { throw 'Başlatmamalı.' }
+        Mock Get-Hizmet { $null }
+        { Invoke-HizAb -Hedefler @('x.example') -Tekrar 2 } | Should Throw 'kurulu değil'
+
+        Mock Get-Hizmet { [pscustomobject]@{ Status = 'Stopped' } }
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = 'Stopped'; StartMode = 'Disabled' } }
+        { Invoke-HizAb -Hedefler @('x.example') -Tekrar 2 } | Should Throw 'duraklatılmış'
+        Assert-MockCalled Stop-Hizmet -Times 0 -Exactly -Scope It
+        Assert-MockCalled Start-Service -Times 0 -Exactly -Scope It
+    }
+
+    It 'çalışan hizmette açık ve kapalı ölçüm yapar, sonunda hizmeti tekrar başlatır' {
+        $script:HizmetDurum = 'Running'
+        Mock Yaz { }
+        Mock Start-Sleep { }
+        Mock Get-Hizmet { [pscustomobject]@{ Status = $script:HizmetDurum } }
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = $script:HizmetDurum; StartMode = 'Auto' } }
+        Mock Stop-Hizmet { $script:HizmetDurum = 'Stopped' }
+        Mock Start-Service { $script:HizmetDurum = 'Running' }
+        Mock Wait-HizmetDurumu { $true }
+        Mock Invoke-Hiz {
+            if ($script:HizmetDurum -eq 'Running') {
+                return @([pscustomobject]@{ Alan = 'x.example'; Deneme = 2; Basarili = 2; IlkBayt = [pscustomobject]@{ Ortanca = 110.0 } })
+            }
+            return @([pscustomobject]@{ Alan = 'x.example'; Deneme = 2; Basarili = 0; IlkBayt = $null })
+        }
+
+        $r = Invoke-HizAb -Hedefler @('x.example') -Tekrar 2
+        $r.BaslangicDurumu | Should Be 'Running'
+        $r.Farklar[0].Sonuc | Should Be 'erisim-acildi'
+        $script:HizmetDurum | Should Be 'Running'
+        Assert-MockCalled Stop-Hizmet -Times 1 -Exactly -Scope It
+        Assert-MockCalled Start-Service -Times 1 -Exactly -Scope It
+    }
+
+    It 'ölçüm sırasında hata olsa bile çalışan hizmeti finally bloğunda geri açar' {
+        $script:HizmetDurum = 'Running'
+        $script:Cagri = 0
+        Mock Yaz { }
+        Mock Start-Sleep { }
+        Mock Get-Hizmet { [pscustomobject]@{ Status = $script:HizmetDurum } }
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = $script:HizmetDurum; StartMode = 'Auto' } }
+        Mock Stop-Hizmet { $script:HizmetDurum = 'Stopped' }
+        Mock Start-Service { $script:HizmetDurum = 'Running' }
+        Mock Wait-HizmetDurumu { $true }
+        Mock Invoke-Hiz {
+            $script:Cagri++
+            if ($script:Cagri -eq 2) { throw 'Ölçüm kesildi.' }
+            return @([pscustomobject]@{ Alan = 'x.example'; Deneme = 2; Basarili = 2; IlkBayt = [pscustomobject]@{ Ortanca = 110.0 } })
+        }
+
+        { Invoke-HizAb -Hedefler @('x.example') -Tekrar 2 } | Should Throw 'Ölçüm kesildi.'
+        $script:HizmetDurum | Should Be 'Running'
+        Assert-MockCalled Start-Service -Times 1 -Exactly -Scope It
+    }
+
+    It 'durmuş hizmette kapalı ve açık ölçüm yapar, sonunda hizmeti tekrar durdurur' {
+        $script:HizmetDurum = 'Stopped'
+        Mock Yaz { }
+        Mock Start-Sleep { }
+        Mock Get-Hizmet { [pscustomobject]@{ Status = $script:HizmetDurum } }
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = $script:HizmetDurum; StartMode = 'Auto' } }
+        Mock Stop-Hizmet { $script:HizmetDurum = 'Stopped' }
+        Mock Start-Service { $script:HizmetDurum = 'Running' }
+        Mock Wait-HizmetDurumu { $true }
+        Mock Invoke-Hiz {
+            if ($script:HizmetDurum -eq 'Running') {
+                return @([pscustomobject]@{ Alan = 'x.example'; Deneme = 2; Basarili = 2; IlkBayt = [pscustomobject]@{ Ortanca = 100.0 } })
+            }
+            return @([pscustomobject]@{ Alan = 'x.example'; Deneme = 2; Basarili = 2; IlkBayt = [pscustomobject]@{ Ortanca = 220.0 } })
+        }
+
+        $r = Invoke-HizAb -Hedefler @('x.example') -Tekrar 2
+        $r.BaslangicDurumu | Should Be 'Stopped'
+        $r.Farklar[0].Sonuc | Should Be 'daha-hizli'
+        $script:HizmetDurum | Should Be 'Stopped'
+        Assert-MockCalled Start-Service -Times 1 -Exactly -Scope It
+        Assert-MockCalled Stop-Hizmet -Times 1 -Exactly -Scope It
+    }
+}

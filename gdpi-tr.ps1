@@ -21,18 +21,21 @@
     .\gdpi-tr.ps1 doktor          çakışan yazılım ve sorun taraması
     .\gdpi-tr.ps1 rapor           özel bilgileri içermeyen yerel teşhis JSON'u üret
     .\gdpi-tr.ps1 test            hedef siteleri test et
+    .\gdpi-tr.ps1 hiz [-Tekrar N] bağlantı aşamalarının sürelerini ölç (yönetici gerekmez)
     .\gdpi-tr.ps1 liste-guncelle  engelli alan adı listesini GitHub'dan güncelle
     .\gdpi-tr.ps1 bekci           bekçi görevinin çalıştırdığı denetim (elle gerekmez)
 #>
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'duraklat', 'devam', 'doktor', 'test', 'liste-guncelle', 'bekci', 'rapor')]
+    [ValidateSet('menu', 'bul', 'kur', 'kaldir', 'durum', 'duraklat', 'devam', 'doktor', 'test', 'liste-guncelle', 'bekci', 'rapor', 'hiz')]
     [string]$Komut = 'menu',
     [switch]$Eski,
     [switch]$Genel,
     [string[]]$Hedef,
-    [switch]$Json
+    [switch]$Json,
+    [ValidateRange(1, 20)]
+    [int]$Tekrar = 5
 )
 
 $ErrorActionPreference = 'Stop'
@@ -82,6 +85,10 @@ $Script:Paket = @{
 # Engelli olduğu bilinen test hedefleri ve engelsiz kontrol siteleri.
 $Script:VarsayilanHedefler = @('discord.com', 'www.roblox.com')
 $Script:KontrolSiteleri = @('www.google.com', 'www.turkiye.gov.tr')
+# curl -w biçimi: kod|DNS|TCP|TLS|ilk bayt|toplam|indirme hızı|bayt (süreler başlangıçtan itibaren, saniye).
+$Script:HizBicimi = '%{http_code}|%{time_namelookup}|%{time_connect}|%{time_appconnect}|%{time_starttransfer}|%{time_total}|%{speed_download}|%{size_download}'
+# Verim yalnızca yeterince büyük örnekte anlamlıdır; küçük sayfalarda bağlantı kurulumu baskın olur.
+$Script:HizVerimMinBayt = 65536
 
 # Güvenliden riskliye sıralı. --set-ttl içerenler siteleri bozabildiği için sonda.
 $Script:Profiller = @(
@@ -493,17 +500,21 @@ function Get-HttpsSonucu([string]$Alan, [string]$HttpKodu, [int]$CikisKodu) {
     }
 }
 
+function Get-TestSunucusu([string]$Alan) {
+    # Hedef yalnızca alan adı veya IP olabilir; URL, yol ve curl seçenekleri reddedilir.
+    $ip = $null
+    if ([Net.IPAddress]::TryParse($Alan, [ref]$ip)) {
+        if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { return "[$($ip.ToString())]" }
+        return $ip.ToString()
+    }
+    if (-not (Test-AlanAdi $Alan)) { throw 'Test hedefi geçerli bir alan adı veya IP adresi olmalı.' }
+    return $Alan
+}
+
 function Invoke-HttpsOlcum([string]$Alan, [string]$DohUrl, [int]$Sure = 8) {
     # Hedefe HTTPS bağlantısı kurulabiliyor mu? DohUrl verilirse DNS engeli devre dışı kalır,
     # yalnızca DPI ölçülür.
-    $ip = $null
-    $sunucu = $Alan
-    if ([Net.IPAddress]::TryParse($Alan, [ref]$ip)) {
-        $sunucu = $ip.ToString()
-        if ($ip.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetworkV6) { $sunucu = "[$sunucu]" }
-    } elseif (-not (Test-AlanAdi $Alan)) {
-        throw 'Test hedefi geçerli bir alan adı veya IP adresi olmalı.'
-    }
+    $sunucu = Get-TestSunucusu $Alan
     $curl = Get-Curl
     if (-not $curl) { throw 'Windows curl.exe bulunamadı (Windows 10 1803+ gerekir).' }
     $arg = @('-s', '-o', 'NUL', '-w', '%{http_code}', '--connect-timeout', '5', '-m', "$Sure", "https://$sunucu/")
@@ -516,6 +527,146 @@ function Invoke-HttpsOlcum([string]$Alan, [string]$DohUrl, [int]$Sure = 8) {
 
 function Test-Https([string]$Alan, [string]$DohUrl, [int]$Sure = 8) {
     return (Invoke-HttpsOlcum $Alan $DohUrl $Sure).Erisim
+}
+
+# --- Hız ölçümü -----------------------------------------------------------
+# Bu bölüm hat hızını değil, hedefe bağlantı aşamalarının sürelerini ölçer. Hiçbir ayarı değiştirmez.
+
+function ConvertTo-Milisaniye($Saniye) {
+    # curl süreleri ondalık noktalı saniyedir; kültürden bağımsız çözülür. Geçersizse $null.
+    $deger = 0.0
+    if ($Saniye -isnot [string] -or
+        -not [double]::TryParse($Saniye, [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture, [ref]$deger) -or
+        [double]::IsNaN($deger) -or [double]::IsInfinity($deger) -or $deger -lt 0) { return $null }
+    return [Math]::Round($deger * 1000, 1)
+}
+
+function Get-HizOlcumuSonucu([string]$Alan, [string]$Cikti, [int]$CikisKodu) {
+    $sonuc = [ordered]@{ DnsMs = $null; TcpMs = $null; TlsMs = $null; SunucuMs = $null; IlkBaytMs = $null
+        ToplamMs = $null; VerimBps = $null; Bayt = $null }
+    $parcalar = @($Cikti.Trim() -split '\|')
+    $temel = Get-HttpsSonucu $Alan $parcalar[0] $CikisKodu
+    if ($temel.Erisim -and $parcalar.Count -eq 8) {
+        $dns = ConvertTo-Milisaniye $parcalar[1]
+        $tcp = ConvertTo-Milisaniye $parcalar[2]
+        $tls = ConvertTo-Milisaniye $parcalar[3]
+        $ilk = ConvertTo-Milisaniye $parcalar[4]
+        $top = ConvertTo-Milisaniye $parcalar[5]
+        $hiz = 0.0; $bayt = 0.0
+        $hizTamam = [double]::TryParse($parcalar[6], [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture, [ref]$hiz) -and $hiz -ge 0
+        $baytTamam = [double]::TryParse($parcalar[7], [Globalization.NumberStyles]::Float,
+            [Globalization.CultureInfo]::InvariantCulture, [ref]$bayt) -and $bayt -ge 0
+        # Süreler başlangıçtan itibaren birikimlidir; aşama süresi iki ölçümün farkıdır.
+        # IP hedefinde DNS ve TLS yoksa curl 0 verir.
+        if ($null -ne $dns -and $null -ne $tcp -and $null -ne $ilk -and $null -ne $top -and
+            $tcp -ge $dns -and $ilk -ge $tcp) {
+            $sonuc.DnsMs = $dns
+            $sonuc.TcpMs = [Math]::Round($tcp - $dns, 1)
+            $onceki = $tcp
+            if ($null -ne $tls -and $tls -ge $tcp -and $tls -gt 0) {
+                $sonuc.TlsMs = [Math]::Round($tls - $tcp, 1)
+                $onceki = $tls
+            }
+            if ($ilk -ge $onceki) { $sonuc.SunucuMs = [Math]::Round($ilk - $onceki, 1) }
+            $sonuc.IlkBaytMs = $ilk
+            $sonuc.ToplamMs = $top
+        }
+        if ($hizTamam) { $sonuc.VerimBps = [Math]::Round($hiz, 0) }
+        if ($baytTamam) { $sonuc.Bayt = [Math]::Round($bayt, 0) }
+    }
+    $sonuc.Insert(0, 'Alan', $Alan)
+    $sonuc.Insert(1, 'Erisim', $temel.Erisim)
+    $sonuc.Insert(2, 'Durum', $temel.Durum)
+    $sonuc.Insert(3, 'HttpKodu', $temel.HttpKodu)
+    $sonuc.Insert(4, 'Aciklama', $temel.Aciklama)
+    return [pscustomobject]$sonuc
+}
+
+function Invoke-HizOlcumu([string]$Alan, [int]$Sure = 10) {
+    $sunucu = Get-TestSunucusu $Alan
+    $curl = Get-Curl
+    if (-not $curl) { throw 'Windows curl.exe bulunamadı (Windows 10 1803+ gerekir).' }
+    # --disable ilk argüman olmalı. --range en çok 512 KB ister; sunucu yok sayarsa -m süreyi sınırlar.
+    $arg = @('--disable', '-s', '-o', 'NUL', '-w', $Script:HizBicimi, '--connect-timeout', '5', '-m', "$Sure",
+        '--range', '0-524287', "https://$sunucu/")
+    $cikti = & $curl @arg 2>$null
+    return Get-HizOlcumuSonucu $Alan ([string]$cikti) $LASTEXITCODE
+}
+
+function Get-Istatistik([double[]]$Degerler) {
+    # Ortanca ve p90 (en yakın sıra). Veri yoksa $null.
+    $v = @($Degerler | Sort-Object)
+    if ($v.Count -eq 0) { return $null }
+    $orta = if ($v.Count % 2 -eq 1) { $v[($v.Count - 1) / 2] } else { ($v[$v.Count / 2 - 1] + $v[$v.Count / 2]) / 2 }
+    # Sıra = ceil(0.9 * n); kayan nokta hatası olmasın diye tam sayı aritmetiğiyle.
+    $p90 = $v[[Math]::Max(0, [int][Math]::Ceiling((9 * $v.Count) / 10.0) - 1)]
+    return [pscustomobject]@{
+        Say = $v.Count
+        Ortanca = [Math]::Round($orta, 1)
+        P90 = [Math]::Round($p90, 1)
+        En = $v[0]
+        Enfazla = $v[$v.Count - 1]
+    }
+}
+
+function Get-HizOzeti([string]$Alan, $Olcumler) {
+    $olcumler = @($Olcumler)
+    $basarili = @($olcumler | Where-Object { $_.Erisim })
+    $deger = { param($ad) @($basarili | Where-Object { $null -ne $_.$ad } | ForEach-Object { [double]$_.$ad }) }
+    $hatalar = @($olcumler | Where-Object { -not $_.Erisim } | Group-Object Durum |
+        ForEach-Object { [pscustomobject]@{ Durum = $_.Name; Say = $_.Count } })
+    return [pscustomobject]@{
+        Alan = $Alan
+        Deneme = $olcumler.Count
+        Basarili = $basarili.Count
+        Hatalar = $hatalar
+        Dns = Get-Istatistik (& $deger 'DnsMs')
+        Tcp = Get-Istatistik (& $deger 'TcpMs')
+        Tls = Get-Istatistik (& $deger 'TlsMs')
+        Sunucu = Get-Istatistik (& $deger 'SunucuMs')
+        IlkBayt = Get-Istatistik (& $deger 'IlkBaytMs')
+        Verim = Get-Istatistik (& $deger 'VerimBps')
+        Bayt = Get-Istatistik (& $deger 'Bayt')
+    }
+}
+
+function Format-HizOzeti($Ozet) {
+    $parca = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($a in @(@('DNS', 'Dns'), @('TCP', 'Tcp'), @('TLS', 'Tls'), @('sunucu', 'Sunucu'))) {
+        $s = $Ozet.($a[1])
+        if ($s) { $parca.Add(('{0} {1:N0} ms' -f $a[0], $s.Ortanca)) }
+    }
+    if ($Ozet.IlkBayt) { $parca.Add(('ilk bayt {0:N0} ms (p90 {1:N0})' -f $Ozet.IlkBayt.Ortanca, $Ozet.IlkBayt.P90)) }
+    if ($Ozet.Verim -and $Ozet.Bayt -and $Ozet.Bayt.Ortanca -ge $Script:HizVerimMinBayt) {
+        $parca.Add(('örnek verimi {0:N2} MB/s' -f ($Ozet.Verim.Ortanca / 1MB)))
+    }
+    return ('{0}: {1}/{2} başarılı' -f $Ozet.Alan, $Ozet.Basarili, $Ozet.Deneme) +
+        $(if ($parca.Count) { ' | ' + ($parca -join ' | ') } else { '' })
+}
+
+function Invoke-Hiz {
+    param([string[]]$Hedefler, [int]$Tekrar = 5)
+    Baslik 'Bağlantı süresi ölçümü'
+    $liste = @($Hedefler + $Script:KontrolSiteleri | Where-Object { $_ } | Select-Object -Unique)
+    Yaz "  Her hedef $Tekrar kez ölçülür; ortanca ve p90 gösterilir. Hedefler: $($liste -join ', ')" 'DarkGray'
+    Yaz '  Bu bir hat hızı testi değildir: bağlantı aşamalarının sürelerini ölçer. Kontrol siteleri karşılaştırma içindir.' 'DarkGray'
+    $ozetler = @()
+    foreach ($h in $liste) {
+        $olcumler = @()
+        for ($i = 0; $i -lt $Tekrar; $i++) {
+            if ($i -gt 0) { Start-Sleep -Milliseconds 200 }
+            $olcumler += Invoke-HizOlcumu $h
+        }
+        $ozet = Get-HizOzeti $h $olcumler
+        $ozetler += $ozet
+        $satir = Format-HizOzeti $ozet
+        if ($ozet.Basarili -eq $ozet.Deneme) { Basari $satir }
+        elseif ($ozet.Basarili -gt 0) { Uyari $satir } else { Hata $satir }
+        foreach ($hata in $ozet.Hatalar) { Yaz "      $($hata.Say) başarısız: $($hata.Durum)" 'DarkGray' }
+    }
+    return $ozetler
 }
 
 function Test-Internet {
@@ -1707,6 +1858,7 @@ function Show-Menu {
         Yaz '  8) Duraklat'
         Yaz '  9) Devam et'
         Yaz '  10) Gizlilik korumalı teşhis raporu oluştur'
+        Yaz '  11) Bağlantı süresi ölçümü'
         Yaz '  0) Çıkış'
         $s = Read-Host 'Seçim'
         try {
@@ -1721,6 +1873,7 @@ function Show-Menu {
                 '8' { Invoke-KilitliIslem { Invoke-Duraklat } }
                 '9' { Invoke-KilitliIslem { Invoke-Devam } }
                 '10' { Invoke-Rapor }
+                '11' { Invoke-Hiz -Hedefler $Script:Hedefler | Out-Null }
                 '0' { return }
             }
         } catch {
@@ -1746,7 +1899,7 @@ function Main {
         return
     }
 
-    if ($Komut -notin @('test', 'rapor') -and -not (Test-Yonetici)) {
+    if ($Komut -notin @('test', 'rapor', 'hiz') -and -not (Test-Yonetici)) {
         Hata 'Bu araç yönetici olarak çalıştırılmalı (GoodbyeDPI-TR.cmd dosyasını kullanın).'
         exit 1
     }
@@ -1763,6 +1916,7 @@ function Main {
             'doktor' { Invoke-Doktor }
             'rapor'  { Invoke-Rapor }
             'test'   { Invoke-Test -Hedefler $Script:Hedefler | Out-Null }
+            'hiz'    { Invoke-Hiz -Hedefler $Script:Hedefler -Tekrar $Tekrar | Out-Null }
             'liste-guncelle' { Invoke-KilitliIslem { Invoke-ListeGuncelle } }
             'bekci'  { Invoke-KilitliIslem { Invoke-Bekci } -Bekci }
         }

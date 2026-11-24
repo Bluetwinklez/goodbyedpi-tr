@@ -766,3 +766,134 @@ Describe 'Güvenli alan adı listesi güncellemesi' {
         Assert-MockCalled Start-Service -Times 0 -Scope It
     }
 }
+
+Describe 'Hız ölçümü' {
+    $tam = '200|0.012000|0.036000|0.097000|0.215000|0.300000|1500000.000|450000'
+
+    It 'curl çıktısını aşamalara ayırır' {
+        $o = Get-HizOlcumuSonucu 'ornek.com' $tam 0
+        $o.Erisim | Should Be $true
+        $o.DnsMs | Should Be 12
+        $o.TcpMs | Should Be 24
+        $o.TlsMs | Should Be 61
+        $o.SunucuMs | Should Be 118
+        $o.IlkBaytMs | Should Be 215
+        $o.ToplamMs | Should Be 300
+        $o.VerimBps | Should Be 1500000
+        $o.Bayt | Should Be 450000
+    }
+    It 'IP hedefinde DNS ve TLS yoksa bunları uydurmaz' {
+        $o = Get-HizOlcumuSonucu '192.0.2.1' '200|0.000000|0.020000|0.000000|0.050000|0.060000|1000.000|100' 0
+        $o.Erisim | Should Be $true
+        $o.DnsMs | Should Be 0
+        $o.TcpMs | Should Be 20
+        $o.TlsMs | Should BeNullOrEmpty
+        $o.SunucuMs | Should Be 30
+    }
+    It 'başarısız istekte süre üretmez ve nedeni korur' {
+        $o = Get-HizOlcumuSonucu 'ornek.com' '000|0.000000|0.000000|0.000000|0.000000|10.000000|0.000|0' 28
+        $o.Erisim | Should Be $false
+        $o.Durum | Should Be 'zaman-asimi'
+        $o.IlkBaytMs | Should BeNullOrEmpty
+        $o.VerimBps | Should BeNullOrEmpty
+    }
+    It 'bozuk, eksik veya tutarsız çıktıdan süre çıkarmaz' {
+        (Get-HizOlcumuSonucu 'ornek.com' 'anlamsiz' 0).Erisim | Should Be $false
+        $eksik = Get-HizOlcumuSonucu 'ornek.com' '200|0.012000|0.036000' 0
+        $eksik.Erisim | Should Be $true
+        $eksik.IlkBaytMs | Should BeNullOrEmpty
+        $sayiDegil = Get-HizOlcumuSonucu 'ornek.com' '200|abc|0.036000|0.097000|0.215000|0.3|1|1' 0
+        $sayiDegil.IlkBaytMs | Should BeNullOrEmpty
+        $ters = Get-HizOlcumuSonucu 'ornek.com' '200|0.050000|0.020000|0.097000|0.215000|0.3|1|1' 0
+        $ters.IlkBaytMs | Should BeNullOrEmpty
+    }
+    It 'geçersiz süre metinlerini reddeder, geçerlileri kültürden bağımsız çözer' {
+        foreach ($m in '-1', 'NaN', 'Infinity', 'abc', '', '0,5') {
+            ConvertTo-Milisaniye $m | Should BeNullOrEmpty
+        }
+        ConvertTo-Milisaniye '0.0125' | Should Be 12.5
+        ConvertTo-Milisaniye '0' | Should Be 0
+    }
+    It 'ortanca ve p90 değerlerini doğru hesaplar' {
+        $a = Get-Istatistik @(5, 1, 3, 2, 4)
+        $a.Ortanca | Should Be 3
+        $a.P90 | Should Be 5
+        $a.Say | Should Be 5
+        $b = Get-Istatistik @(1, 2, 3, 4)
+        $b.Ortanca | Should Be 2.5
+        $b.P90 | Should Be 4
+        (Get-Istatistik @(1..10)).P90 | Should Be 9
+        (Get-Istatistik @(7)).Ortanca | Should Be 7
+        (Get-Istatistik @(7)).P90 | Should Be 7
+        Get-Istatistik @() | Should BeNullOrEmpty
+    }
+    It 'hedefi yalnızca alan adı veya IP olarak kabul eder' {
+        Get-TestSunucusu 'discord.com' | Should Be 'discord.com'
+        Get-TestSunucusu '192.0.2.1' | Should Be '192.0.2.1'
+        Get-TestSunucusu '2001:db8::1' | Should Be '[2001:db8::1]'
+        foreach ($k in 'example.com/yol', 'example.com --insecure', 'https://example.com', '') {
+            { Get-TestSunucusu $k } | Should Throw 'geçerli bir alan adı'
+        }
+    }
+    It 'kötü hedefte curl çalıştırmaz' {
+        Mock Get-Curl { throw 'curl çalışmamalı.' }
+        { Invoke-HizOlcumu 'example.com/yonlendir' } | Should Throw 'geçerli bir alan adı'
+        Assert-MockCalled Get-Curl -Times 0 -Exactly -Scope It
+    }
+    It 'denemeleri özetler ve başarısızlıkları nedeniyle sayar' {
+        $olcumler = @(
+            (Get-HizOlcumuSonucu 'ornek.com' '200|0.010000|0.030000|0.090000|0.200000|0.3|1|1' 0),
+            (Get-HizOlcumuSonucu 'ornek.com' '200|0.020000|0.050000|0.110000|0.240000|0.3|1|1' 0),
+            (Get-HizOlcumuSonucu 'ornek.com' '200|0.030000|0.060000|0.120000|0.280000|0.3|1|1' 0),
+            (Get-HizOlcumuSonucu 'ornek.com' '000|0|0|0|0|10|0|0' 28)
+        )
+        $o = Get-HizOzeti 'ornek.com' $olcumler
+        $o.Deneme | Should Be 4
+        $o.Basarili | Should Be 3
+        $o.Hatalar.Count | Should Be 1
+        $o.Hatalar[0].Durum | Should Be 'zaman-asimi'
+        $o.IlkBayt.Ortanca | Should Be 240
+        $o.Dns.Ortanca | Should Be 20
+    }
+    It 'verimi yalnızca yeterince büyük örnekte gösterir' {
+        $kucuk = Get-HizOzeti 'ornek.com' @(Get-HizOlcumuSonucu 'ornek.com' '200|0.01|0.03|0.09|0.2|0.3|9000.0|2000' 0)
+        $buyuk = Get-HizOzeti 'ornek.com' @(Get-HizOlcumuSonucu 'ornek.com' '200|0.01|0.03|0.09|0.2|0.3|2000000.0|500000' 0)
+        (Format-HizOzeti $kucuk) | Should Not Match 'MB/s'
+        (Format-HizOzeti $buyuk) | Should Match 'MB/s'
+        (Format-HizOzeti $buyuk) | Should Match '1/1 başarılı'
+    }
+    It 'her hedefi tekrar sayısı kadar ölçer, kontrol sitelerini ekler, yinelenenleri atlar' {
+        Mock Baslik { }
+        Mock Yaz { }
+        Mock Basari { }
+        Mock Uyari { }
+        Mock Hata { }
+        Mock Start-Sleep { }
+        Mock Invoke-HizOlcumu {
+            Get-HizOlcumuSonucu $Alan '200|0.010000|0.030000|0.090000|0.200000|0.3|1|1' 0
+        }
+        $sonuc = @(Invoke-Hiz -Hedefler @('a.example', 'www.google.com') -Tekrar 3)
+        $sonuc.Count | Should Be 3
+        Assert-MockCalled Invoke-HizOlcumu -Times 9 -Exactly -Scope It
+        Assert-MockCalled Basari -Times 3 -Exactly -Scope It
+        Assert-MockCalled Hata -Times 0 -Exactly -Scope It
+    }
+    It 'tamamen başarısız hedefi hata, kısmen başarısızı uyarı olarak gösterir' {
+        Mock Baslik { }
+        Mock Yaz { }
+        Mock Basari { }
+        Mock Uyari { }
+        Mock Hata { }
+        Mock Start-Sleep { }
+        $script:HizCagri = @{}
+        Mock Invoke-HizOlcumu {
+            $script:HizCagri[$Alan] = 1 + [int]$script:HizCagri[$Alan]
+            if ($Alan -eq 'olu.example') { return Get-HizOlcumuSonucu $Alan '000|0|0|0|0|5|0|0' 6 }
+            if ($Alan -eq 'yari.example' -and $script:HizCagri[$Alan] -eq 1) { return Get-HizOlcumuSonucu $Alan '000|0|0|0|0|5|0|0' 28 }
+            Get-HizOlcumuSonucu $Alan '200|0.010000|0.030000|0.090000|0.200000|0.3|1|1' 0
+        }
+        Invoke-Hiz -Hedefler @('olu.example', 'yari.example') -Tekrar 2 | Out-Null
+        Assert-MockCalled Hata -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match '^olu.example: 0/2' }
+        Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match '^yari.example: 1/2' }
+    }
+}

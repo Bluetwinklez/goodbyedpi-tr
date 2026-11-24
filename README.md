@@ -15,6 +15,7 @@ The command names remain Turkish:
 .\gdpi-tr.ps1 kur             # Install the service
 .\gdpi-tr.ps1 durum           # Show current state
 .\gdpi-tr.ps1 durum -Json     # Read structured status without elevation or network tests
+.\gdpi-tr.ps1 hiz -Tekrar 5   # Measure connection stage timings (no elevation, changes nothing)
 .\gdpi-tr.ps1 duraklat        # Pause the service across reboots
 .\gdpi-tr.ps1 devam           # Resume the service
 .\gdpi-tr.ps1 liste-guncelle  # Refresh domain lists
@@ -29,6 +30,8 @@ If an older GoodbyeDPI service is installed, remove it using its own uninstaller
 ## Operation and recovery
 
 The installer downloads upstream binaries and verifies their hashes. A scheduled watchdog checks connectivity, attempts supported recovery and stops the service if it disrupts general access. Configuration and logs are under `C:\Program Files\GoodbyeDPI-TR\veri`. The installation directory is restricted to administrators.
+
+`hiz` is not a line-speed test and cannot raise your bandwidth. For each target (the listed defaults plus two control sites) it makes `-Tekrar` HTTPS requests and reports the median and p90 of DNS, TCP, TLS, server wait and time to first byte. A throughput figure appears only when the sample is large enough to be meaningful. A DNS time of 0 ms usually means the system resolver answered from its cache. The command contacts those sites directly and stores nothing.
 
 Use menu option **8** to pause and **9** to resume. Windows keeps the service disabled across reboots while paused, and the watchdog skips its checks.
 

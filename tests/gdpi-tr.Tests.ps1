@@ -1226,3 +1226,134 @@ Describe 'DNS gecikme sıralaması' {
         Assert-MockCalled Hata -Times 0 -Exactly -Scope It
     }
 }
+
+Describe 'Ölçüme dayalı profil seçimi' {
+    function Yeni-Calisan($Ad, $Ortanca) { [pscustomobject]@{ Profil = @{ Ad = $Ad; Arg = '-x' }; Ortanca = $Ortanca } }
+
+    It 'belirgin farkı yalnızca hem ms hem yüzde eşiği aşınca kabul eder' {
+        Test-BelirginFark 100 60 | Should Be $true
+        Test-BelirginFark 100 75 | Should Be $false
+        Test-BelirginFark 200 160 | Should Be $true
+        Test-BelirginFark 500 450 | Should Be $false
+        Test-BelirginFark 0 0 | Should Be $false
+        Test-BelirginFark 100 150 | Should Be $false
+    }
+    It 'profil hızını DNS hariç ölçer ve DoH adresini iletir' {
+        Mock Invoke-HizOlcumu { Get-HizOlcumuSonucu $Alan '200|0.010000|0.030000|0.090000|0.110000|0.2|1|1' 0 }
+        $h = Measure-ProfilHizi @('a.example', 'b.example') 'https://doh.example/dns-query' 2
+        $h.Ortanca | Should Be 100
+        $h.Denenen | Should Be 4
+        $h.Olculen | Should Be 4
+        Assert-MockCalled Invoke-HizOlcumu -Times 4 -Exactly -Scope It -ParameterFilter { $DohUrl -eq 'https://doh.example/dns-query' }
+    }
+    It 'örneklerin yarısından azı okunabildiyse hızı güvenilmez sayar' {
+        $script:ProfilCagri = 0
+        Mock Invoke-HizOlcumu {
+            $script:ProfilCagri++
+            if ($script:ProfilCagri -eq 1) { return Get-HizOlcumuSonucu $Alan '200|0.010000|0.030000|0.090000|0.110000|0.2|1|1' 0 }
+            if ($script:ProfilCagri -eq 2) { throw 'curl yok' }
+            Get-HizOlcumuSonucu $Alan '000|0|0|0|0|5|0|0' 28
+        }
+        $h = Measure-ProfilHizi @('a.example') 'https://doh.example/dns-query' 4
+        $h.Denenen | Should Be 4
+        $h.Olculen | Should Be 1
+        $h.Ortanca | Should BeNullOrEmpty
+    }
+    It 'tek çalışan profili olduğu gibi seçer; aday yoksa $null döner' {
+        (Select-ProfilAdayi @((Yeni-Calisan 'a' 100)) $null).Profil.Ad | Should Be 'a'
+        Select-ProfilAdayi @() $null | Should BeNullOrEmpty
+    }
+    It 'fark belirgin değilse en güvenli (ilk) profili korur' {
+        (Select-ProfilAdayi @((Yeni-Calisan 'guvenli' 100), (Yeni-Calisan 'hizli' 80)) $null).Profil.Ad | Should Be 'guvenli'
+    }
+    It 'başka profil belirgin hızlıysa onu seçer; eşitlikte güvenli olan kalır' {
+        (Select-ProfilAdayi @((Yeni-Calisan 'guvenli' 200), (Yeni-Calisan 'orta' 120), (Yeni-Calisan 'hizli' 100)) $null).Profil.Ad | Should Be 'hizli'
+        (Select-ProfilAdayi @((Yeni-Calisan 'guvenli' 200), (Yeni-Calisan 'a' 100), (Yeni-Calisan 'b' 100)) $null).Profil.Ad | Should Be 'a'
+    }
+    It 'güvenli profilin hızı ölçülemediyse karşılaştırma yapmadan onu seçer' {
+        (Select-ProfilAdayi @((Yeni-Calisan 'guvenli' $null), (Yeni-Calisan 'hizli' 10)) $null).Profil.Ad | Should Be 'guvenli'
+    }
+    It 'kayıtlı profili belirgin yavaş değilse korur, belirgin yavaşsa bırakır' {
+        $adaylar = @((Yeni-Calisan 'modern-9' 100), (Yeni-Calisan 'modern-7' 110))
+        (Select-ProfilAdayi $adaylar 'modern-7').Profil.Ad | Should Be 'modern-7'
+        $yavas = @((Yeni-Calisan 'modern-9' 100), (Yeni-Calisan 'modern-7' 135))
+        (Select-ProfilAdayi $yavas 'modern-7').Profil.Ad | Should Be 'modern-9'
+        (Select-ProfilAdayi $adaylar 'yok-boyle-profil').Profil.Ad | Should Be 'modern-9'
+    }
+}
+
+Describe 'Invoke-Bul profil karşılaştırması' {
+    BeforeEach {
+        $script:SonProfil = $null
+        $script:BaslatmaSayisi = 0
+        $script:ProfilSonuc = @{}
+        $script:KayitliAyar = $null
+        Mock Baslik { }
+        Mock Yaz { }
+        Mock Basari { }
+        Mock Uyari { }
+        Mock Hata { }
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ StartMode = 'Auto'; State = 'Stopped' } }
+        Mock Get-Hizmet { $null }
+        Mock Get-YabanciGdpiSurecleri { @() }
+        Mock Test-Internet { $true }
+        Mock Find-Doh { 'https://doh.example/dns-query' }
+        Mock Get-Ikililer { 'C:\sahte' }
+        Mock Get-ListeDosyalari { @() }
+        Mock Write-Liste { 'C:\sahte\liste.txt' }
+        Mock Get-Iss { $null }
+        Mock Read-Ayarlar { $script:KayitliAyar }
+        Mock Find-DnsSunucusu { $null }
+        Mock Test-Https { $true }
+        Mock Start-GdpiGecici {
+            $script:BaslatmaSayisi++
+            $script:SonProfil = ($Argumanlar -split ' ')[0]
+            [pscustomobject]@{ Id = 1 }
+        }
+        Mock Stop-GdpiGecici { $script:SonProfil = $null }
+        Mock Test-Hedefler {
+            $s = [ordered]@{}
+            foreach ($h in $Hedefler) {
+                $s[$h] = [bool]($script:SonProfil -and $script:ProfilSonuc.ContainsKey($script:SonProfil))
+            }
+            $s
+        }
+        Mock Measure-ProfilHizi { [pscustomobject]@{ Ortanca = $script:ProfilSonuc[$script:SonProfil]; Denenen = 3; Olculen = 3 } }
+    }
+
+    It 'ilk çalışandan sonra en çok iki ek aday dener ve belirgin hızlı olanı seçer' {
+        $script:ProfilSonuc = @{ '-9' = 200; '-7' = 100; '-6' = 120; '-8' = 10 }
+        $a = Invoke-Bul -Hedefler @('engelli.example') -Kaydetme
+        $a.profil | Should Be 'modern-7'
+        $script:BaslatmaSayisi | Should Be 3
+    }
+    It 'fark belirgin değilse en güvenli çalışan profilde kalır' {
+        $script:ProfilSonuc = @{ '-9' = 100; '-7' = 95; '-6' = 90 }
+        (Invoke-Bul -Hedefler @('engelli.example') -Kaydetme).profil | Should Be 'modern-9'
+    }
+    It 'ilk profiller başarısız olsa da karşılaştırma ilk çalışandan sonra başlar' {
+        $script:ProfilSonuc = @{ '-7' = 100; '-6' = 90; '-8' = 40; '-5' = 10 }
+        (Invoke-Bul -Hedefler @('engelli.example') -Kaydetme).profil | Should Be 'modern-8'
+        $script:BaslatmaSayisi | Should Be 4
+    }
+    It 'riskli (--set-ttl) profilleri çalışan bir profil varken denemez' {
+        $script:ProfilSonuc = @{ '-e' = 100 }
+        (Invoke-Bul -Hedefler @('engelli.example') -Kaydetme).profil | Should Be 'sni-bolme'
+        $script:BaslatmaSayisi | Should Be 6
+    }
+    It 'kayıtlı profil belirgin yavaş değilse korunur' {
+        $script:KayitliAyar = [pscustomobject]@{ profil = 'modern-7'; dns = $null }
+        $script:ProfilSonuc = @{ '-9' = 100; '-7' = 110 }
+        (Invoke-Bul -Hedefler @('engelli.example') -Kaydetme).profil | Should Be 'modern-7'
+    }
+    It 'hiçbir profil çalışmazsa hata verir ve $null döner' {
+        $script:ProfilSonuc = @{}
+        Invoke-Bul -Hedefler @('engelli.example') -Kaydetme | Should BeNullOrEmpty
+        Assert-MockCalled Hata -Scope It -ParameterFilter { $Metin -match 'Hiçbir profil engeli aşamadı' }
+    }
+    It 'engel yoksa profil denemez ve ilk profili seçer' {
+        Mock Test-Hedefler { $s = [ordered]@{}; foreach ($h in $Hedefler) { $s[$h] = $true }; $s }
+        (Invoke-Bul -Hedefler @('acik.example') -Kaydetme).profil | Should Be 'modern-9'
+        $script:BaslatmaSayisi | Should Be 0
+    }
+}

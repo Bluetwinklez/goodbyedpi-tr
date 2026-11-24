@@ -5,6 +5,7 @@ Describe 'Get-DurumOzeti' {
     It 'duraklatılmış hizmeti ağ testi veya hizmet değişikliği yapmadan raporlar' {
         Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = 'Stopped'; StartMode = 'Disabled' } }
         Mock Read-Ayarlar { [pscustomobject]@{ profil = 'modern-9'; arg = '-9'; genel = $false } }
+        Mock Read-OlcumGecmisi { @() }
         Mock Test-Internet { throw 'Durum okuma ağ testi yapmamalı.' }
         Mock Start-Service { throw 'Durum okuma hizmet başlatmamalı.' }
         $d = Get-DurumOzeti
@@ -18,10 +19,21 @@ Describe 'Get-DurumOzeti' {
     It 'okunamayan hizmeti kurulu değil gibi göstermez' {
         Mock Get-GdpiHizmetBilgisi { throw 'Erişim reddedildi.' }
         Mock Read-Ayarlar { throw 'Ayar okunamadı.' }
+        Mock Read-OlcumGecmisi { @() }
         $d = Get-DurumOzeti
         $d.Hizmet | Should Be 'Unknown'
         $d.Duraklatildi | Should BeNullOrEmpty
         $d.Hatalar.Count | Should Be 2
+    }
+    It 'son ölçümü raporlar; okunamayan geçmişi hata olarak bildirir' {
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = 'Running'; StartMode = 'Auto' } }
+        Mock Read-Ayarlar { }
+        Mock Read-OlcumGecmisi { @([pscustomobject]@{ Zaman = '2026-11-01T10:00:00.0000000Z'; Tekrar = 5 }, [pscustomobject]@{ Zaman = '2026-11-02T10:00:00.0000000Z'; Tekrar = 3 }) }
+        (Get-DurumOzeti).SonOlcum.Tekrar | Should Be 3
+        Mock Read-OlcumGecmisi { throw 'Bozuk.' }
+        $d = Get-DurumOzeti
+        $d.SonOlcum | Should BeNullOrEmpty
+        $d.Hatalar -contains 'Ölçüm geçmişi okunamadı.' | Should Be $true
     }
 }
 
@@ -804,8 +816,25 @@ Describe 'Hız ölçümü' {
         $eksik.IlkBaytMs | Should BeNullOrEmpty
         $sayiDegil = Get-HizOlcumuSonucu 'ornek.com' '200|abc|0.036000|0.097000|0.215000|0.3|1|1' 0
         $sayiDegil.IlkBaytMs | Should BeNullOrEmpty
-        $ters = Get-HizOlcumuSonucu 'ornek.com' '200|0.050000|0.020000|0.097000|0.215000|0.3|1|1' 0
-        $ters.IlkBaytMs | Should BeNullOrEmpty
+        # İmkânsız sıralar: ilk bayt bağlantıdan önce; toplam ilk bayttan önce; TLS bağlantıdan önce.
+        foreach ($imkansiz in '200|0.010000|0.300000|0.310000|0.200000|0.5|1|1',
+            '200|0.010000|0.030000|0.090000|0.400000|0.3|1|1',
+            '200|0.010000|0.090000|0.050000|0.400000|0.5|1|1') {
+            (Get-HizOlcumuSonucu 'ornek.com' $imkansiz 0).IlkBaytMs | Should BeNullOrEmpty
+        }
+    }
+    It 'çözümleyici bağlantıdan sonra yanıt verirse yalnızca TCP aşamasını boş bırakır (gerçek roblox örneği)' {
+        $o = Get-HizOlcumuSonucu 'www.roblox.com' '200|0.141091|0.087419|0.146879|0.323995|0.409426|155432|63637' 0
+        $o.DnsMs | Should Be 141.1
+        $o.TcpMs | Should BeNullOrEmpty
+        $o.TlsMs | Should Be 59.5
+        $o.SunucuMs | Should Be 177.1
+        $o.IlkBaytMs | Should Be 324
+        $o.ToplamMs | Should Be 409.4
+    }
+    It 'hedef açılıp süre çıkarılamadıysa bunu özet satırında belirtir' {
+        $o = Get-HizOlcumuSonucu 'a.example' '200|0.010000|0.300000|0.310000|0.200000|0.5|1|1' 0
+        (Format-HizOzeti (Get-HizOzeti 'a.example' @($o))) | Should Match 'süre okunamadı'
     }
     It 'geçersiz süre metinlerini reddeder, geçerlileri kültürden bağımsız çözer' {
         foreach ($m in '-1', 'NaN', 'Infinity', 'abc', '', '0,5') {
@@ -895,5 +924,174 @@ Describe 'Hız ölçümü' {
         Invoke-Hiz -Hedefler @('olu.example', 'yari.example') -Tekrar 2 | Out-Null
         Assert-MockCalled Hata -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match '^olu.example: 0/2' }
         Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match '^yari.example: 1/2' }
+    }
+}
+
+Describe 'Ölçüm geçmişi' {
+    BeforeEach {
+        $Script:EskiOlcumDosyasi = $Script:OlcumDosyasi
+        # Pester 3.4 TestDrive'ı It'ler arasında temizlemez; her test kendi klasörünü kullanır.
+        $Script:OlcumDosyasi = Join-Path $TestDrive ([guid]::NewGuid().ToString('N') + '\olcumler.json')
+    }
+    AfterEach {
+        $Script:OlcumDosyasi = $Script:EskiOlcumDosyasi
+    }
+
+    function Yeni-Hedef($Alan, $IlkBayt, $Basarili = 3, $Deneme = 3) {
+        [pscustomobject]@{ Alan = $Alan; Deneme = $Deneme; Basarili = $Basarili; DnsMs = 10; TcpMs = 20; TlsMs = 30
+            SunucuMs = 40; IlkBaytMs = $IlkBayt; IlkBaytP90Ms = $IlkBayt; VerimBps = $null }
+    }
+    function Yeni-Kayit($Zaman, $Hedefler, $Hizmet = 'Running', $Profil = 'modern-9') {
+        [pscustomobject]@{ Zaman = $Zaman; Tekrar = 3; Hizmet = $Hizmet; Profil = $Profil; Hedefler = @($Hedefler) }
+    }
+
+    It 'özetten yalnızca sayısal alanlı kayıt üretir ve bağlamı ekler' {
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = 'Running' } }
+        Mock Read-Ayarlar { [pscustomobject]@{ profil = 'modern-9' } }
+        $olcum = Get-HizOlcumuSonucu 'a.example' '200|0.010000|0.030000|0.090000|0.200000|0.3|2000000.0|500000' 0
+        $kayit = ConvertTo-OlcumKaydi @(Get-HizOzeti 'a.example' @($olcum)) 3
+        $kayit.Hizmet | Should Be 'Running'
+        $kayit.Profil | Should Be 'modern-9'
+        $kayit.Tekrar | Should Be 3
+        $kayit.Hedefler.Count | Should Be 1
+        $kayit.Hedefler[0].Alan | Should Be 'a.example'
+        $kayit.Hedefler[0].IlkBaytMs | Should Be 200
+        $kayit.Hedefler[0].VerimBps | Should Be 2000000
+        $null -ne (ConvertTo-BekciZamani $kayit.Zaman) | Should Be $true
+    }
+    It 'hizmet veya ayar okunamazsa bağlamı bilinmiyor olarak kaydeder' {
+        Mock Get-GdpiHizmetBilgisi { throw 'Erişim reddedildi.' }
+        Mock Read-Ayarlar { throw 'Okunamadı.' }
+        $kayit = ConvertTo-OlcumKaydi @() 5
+        $kayit.Hizmet | Should Be 'Unknown'
+        $kayit.Profil | Should BeNullOrEmpty
+    }
+    It 'kaydı diske yazıp aynen okur (tek hedefli kayıt dizi olarak kalır)' {
+        Add-OlcumKaydi (Yeni-Kayit '2026-11-01T10:00:00.0000000Z' (Yeni-Hedef 'a.example' 100))
+        $g = @(Read-OlcumGecmisi)
+        $g.Count | Should Be 1
+        @($g[0].Hedefler).Count | Should Be 1
+        $g[0].Hedefler[0].IlkBaytMs | Should Be 100
+        $g[0].Hizmet | Should Be 'Running'
+    }
+    It 'dosya yokken boş döner' {
+        @(Read-OlcumGecmisi).Count | Should Be 0
+    }
+    It 'en fazla sınır kadar kayıt tutar ve en eskileri atar' {
+        $Script:OlcumEnFazlaKayit = 3
+        try {
+            1..5 | ForEach-Object {
+                Add-OlcumKaydi (Yeni-Kayit ('2026-11-0{0}T10:00:00.0000000Z' -f $_) (Yeni-Hedef 'a.example' (100 * $_)))
+            }
+            $g = @(Read-OlcumGecmisi)
+            $g.Count | Should Be 3
+            $g[0].Hedefler[0].IlkBaytMs | Should Be 300
+            $g[2].Hedefler[0].IlkBaytMs | Should Be 500
+        } finally {
+            $Script:OlcumEnFazlaKayit = 50
+        }
+    }
+    It 'geçersiz kayıtları atlar, geçerlileri korur' {
+        $yol = $Script:OlcumDosyasi
+        New-Item -ItemType Directory -Force -Path (Split-Path $yol) | Out-Null
+        $icerik = @{
+            SemaSurumu = 1
+            Kayitlar = @(
+                (Yeni-Kayit '2026-11-01T10:00:00.0000000Z' (Yeni-Hedef 'iyi.example' 100)),
+                @{ Zaman = 'tarih-degil'; Hedefler = @() },
+                @{ Hedefler = @() },
+                (Yeni-Kayit '2026-11-02T10:00:00.0000000Z' @(@{ Alan = 5; Deneme = 1; Basarili = 1 }))
+            )
+        } | ConvertTo-Json -Depth 6
+        [IO.File]::WriteAllText($yol, $icerik)
+        $uyarilar = New-Object 'System.Collections.Generic.List[string]'
+        $g = @(Read-OlcumGecmisi $uyarilar)
+        $g.Count | Should Be 1
+        $g[0].Hedefler[0].Alan | Should Be 'iyi.example'
+        $uyarilar.Count | Should Be 1
+    }
+    It 'bozuk dosyayı sessizce ezmez: okuma ve ekleme hata verir, dosya olduğu gibi kalır' {
+        $yol = $Script:OlcumDosyasi
+        New-Item -ItemType Directory -Force -Path (Split-Path $yol) | Out-Null
+        [IO.File]::WriteAllText($yol, '{yarim')
+        { Read-OlcumGecmisi } | Should Throw 'Ölçüm geçmişi okunamadı'
+        { Add-OlcumKaydi (Yeni-Kayit '2026-11-01T10:00:00.0000000Z' (Yeni-Hedef 'a.example' 1)) } | Should Throw 'Ölçüm geçmişi okunamadı'
+        [IO.File]::ReadAllText($yol) | Should Be '{yarim'
+    }
+    It 'desteklenmeyen şema sürümünü reddeder' {
+        $yol = $Script:OlcumDosyasi
+        New-Item -ItemType Directory -Force -Path (Split-Path $yol) | Out-Null
+        [IO.File]::WriteAllText($yol, '{"SemaSurumu":99,"Kayitlar":[]}')
+        { Read-OlcumGecmisi } | Should Throw 'şema sürümü desteklenmiyor'
+    }
+    It 'kullanıcı klasörü bilinmiyorsa yazmaz' {
+        $Script:OlcumDosyasi = $null
+        { Read-OlcumGecmisi } | Should Throw 'LOCALAPPDATA'
+    }
+    It 'belirgin iyileşmeyi, belirgin yavaşlamayı ve gürültü düzeyindeki farkı ayırt eder' {
+        $once = Yeni-Kayit '2026-11-01T10:00:00.0000000Z' @(
+            (Yeni-Hedef 'hizli.example' 200), (Yeni-Hedef 'yavas.example' 200), (Yeni-Hedef 'gurultu.example' 200),
+            (Yeni-Hedef 'kucuk.example' 40), (Yeni-Hedef 'yok.example' $null), (Yeni-Hedef 'sadece-eski.example' 100))
+        $simdi = Yeni-Kayit '2026-11-02T10:00:00.0000000Z' @(
+            (Yeni-Hedef 'hizli.example' 120), (Yeni-Hedef 'yavas.example' 300), (Yeni-Hedef 'gurultu.example' 215),
+            (Yeni-Hedef 'kucuk.example' 70), (Yeni-Hedef 'yok.example' 100), (Yeni-Hedef 'yeni.example' 100))
+        $f = @{}
+        foreach ($x in @(Compare-OlcumKayitlari $once $simdi)) { $f[$x.Alan] = $x }
+        $f.Count | Should Be 5
+        $f['hizli.example'].Sonuc | Should Be 'daha-hizli'
+        $f['hizli.example'].FarkMs | Should Be -80
+        $f['hizli.example'].Yuzde | Should Be -40
+        $f['yavas.example'].Sonuc | Should Be 'daha-yavas'
+        $f['gurultu.example'].Sonuc | Should Be 'belirgin-degil'
+        # 30 ms değişim ama %75: ms eşiğini geçer, yüzde geçer -> belirgin; 70-40=30 ms ve %75
+        $f['kucuk.example'].Sonuc | Should Be 'daha-yavas'
+        $f['yok.example'].Sonuc | Should Be 'karsilastirilamadi'
+    }
+    It 'yüzde yüksek ama mutlak fark küçükse belirgin saymaz' {
+        $once = Yeni-Kayit '2026-11-01T10:00:00.0000000Z' (Yeni-Hedef 'a.example' 10)
+        $simdi = Yeni-Kayit '2026-11-02T10:00:00.0000000Z' (Yeni-Hedef 'a.example' 25)
+        (@(Compare-OlcumKayitlari $once $simdi))[0].Sonuc | Should Be 'belirgin-degil'
+    }
+    It 'karşılaştırma satırı yönü ve başarı oranı değişimini yazar' {
+        $once = Yeni-Kayit '2026-11-01T10:00:00.0000000Z' (Yeni-Hedef 'a.example' 200 3 3)
+        $simdi = Yeni-Kayit '2026-11-02T10:00:00.0000000Z' (Yeni-Hedef 'a.example' 100 2 3)
+        $satir = Format-OlcumFarki (@(Compare-OlcumKayitlari $once $simdi))[0]
+        $satir | Should Match 'a.example: ilk bayt 200 -> 100 ms'
+        $satir | Should Match 'daha hızlı'
+        $satir | Should Match 'başarı 3/3 -> 2/3'
+    }
+    It 'hiçbir hedef ölçülemediyse kaydetmez' {
+        Mock Get-GdpiHizmetBilgisi { $null }
+        Mock Read-Ayarlar { $null }
+        Mock Uyari { }
+        $olcum = Get-HizOlcumuSonucu 'a.example' '000|0|0|0|0|5|0|0' 6
+        Save-HizOlcumu @(Get-HizOzeti 'a.example' @($olcum)) 3 | Should Be $false
+        Test-Path -LiteralPath $Script:OlcumDosyasi | Should Be $false
+    }
+    It 'ikinci kayıtta öncekiyle karşılaştırır ve bağlam değişimini bildirir' {
+        $durum = @{ Hizmet = 'Stopped' }
+        Mock Get-GdpiHizmetBilgisi { [pscustomobject]@{ State = $durum.Hizmet } }
+        Mock Read-Ayarlar { [pscustomobject]@{ profil = 'modern-9' } }
+        Mock Baslik { }
+        Mock Basari { }
+        Mock Uyari { }
+        Mock Yaz { }
+        $hizli = Get-HizOlcumuSonucu 'a.example' '200|0.010000|0.030000|0.090000|0.400000|0.5|1|1' 0
+        Save-HizOlcumu @(Get-HizOzeti 'a.example' @($hizli)) 3 | Should Be $true
+        $durum.Hizmet = 'Running'
+        $hizli2 = Get-HizOlcumuSonucu 'a.example' '200|0.010000|0.030000|0.090000|0.200000|0.3|1|1' 0
+        Save-HizOlcumu @(Get-HizOzeti 'a.example' @($hizli2)) 3 | Should Be $true
+        @(Read-OlcumGecmisi).Count | Should Be 2
+        Assert-MockCalled Yaz -Scope It -ParameterFilter { $Metin -match 'hizmet Stopped -> Running' }
+        Assert-MockCalled Basari -Scope It -ParameterFilter { $Metin -match 'daha hızlı' }
+    }
+    It 'geçmişi listeler; kayıt yoksa bunu söyler' {
+        Mock Baslik { }
+        Mock Yaz { }
+        Invoke-OlcumGecmisi
+        Assert-MockCalled Yaz -Scope It -ParameterFilter { $Metin -match 'Kayıtlı ölçüm yok' }
+        Add-OlcumKaydi (Yeni-Kayit '2026-11-01T10:00:00.0000000Z' (Yeni-Hedef 'a.example' 100))
+        Invoke-OlcumGecmisi
+        Assert-MockCalled Yaz -Scope It -ParameterFilter { $Metin -match 'a.example: ilk bayt 100 ms \(3/3 başarılı\)' }
     }
 }

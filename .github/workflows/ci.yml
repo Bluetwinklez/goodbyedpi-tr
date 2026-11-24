@@ -23,13 +23,20 @@ jobs:
       - name: PSScriptAnalyzer
         shell: powershell
         run: |
-          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          Install-Module PSScriptAnalyzer -RequiredVersion 1.23.0 -Force -Scope CurrentUser
+          Import-Module PSScriptAnalyzer -RequiredVersion 1.23.0
           $s = @(
-            Invoke-ScriptAnalyzer -Path ./gdpi-tr.ps1 -Severity Error
-            Invoke-ScriptAnalyzer -Path ./scripts/package-release.ps1 -Severity Error
+            Invoke-ScriptAnalyzer -Path ./gdpi-tr.ps1 -Settings ./.PSScriptAnalyzerSettings.psd1
+            Invoke-ScriptAnalyzer -Path ./scripts/package-release.ps1 -Settings ./.PSScriptAnalyzerSettings.psd1
+            Invoke-ScriptAnalyzer -Path ./scripts/vm-verify.ps1 -Settings ./.PSScriptAnalyzerSettings.psd1
           ) | Where-Object { $_ }
           $s | Format-Table -AutoSize
           if ($s) { exit 1 }
+      - name: Verify script version constant format
+        shell: powershell
+        run: |
+          $m = Select-String -Path ./gdpi-tr.ps1 -Pattern '^\$Script:Surum\s*=\s*''([0-9]+\.[0-9]+\.[0-9]+)'''
+          if (-not $m) { throw 'gdpi-tr.ps1 içinde geçerli $Script:Surum sabiti bulunamadı.' }
       - name: Test release ZIP contents and SHA-256 manifest
         shell: powershell
         run: |
@@ -54,6 +61,16 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Sürüm etiketi tutarlılığını doğrula
+        shell: powershell
+        run: |
+          $m = Select-String -Path ./gdpi-tr.ps1 -Pattern '^\$Script:Surum\s*=\s*''([^'']+)'''
+          if (-not $m) { throw 'gdpi-tr.ps1 içinde $Script:Surum bulunamadı.' }
+          $betikSurumu = $m.Matches[0].Groups[1].Value
+          $etiketSurumu = $env:GITHUB_REF_NAME -replace '^v', ''
+          if ($betikSurumu -ne $etiketSurumu) {
+            throw "Sürüm uyuşmazlığı: etiket '$env:GITHUB_REF_NAME' ama gdpi-tr.ps1 `$Script:Surum = '$betikSurumu'"
+          }
       - name: Paketle ve yayınla
         shell: powershell
         env:

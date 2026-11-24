@@ -1357,3 +1357,102 @@ Describe 'Invoke-Bul profil karşılaştırması' {
         $script:BaslatmaSayisi | Should Be 0
     }
 }
+
+Describe 'Sistem önerileri' {
+    function Yeni-Adaptor($Ad, $Medya, $Hiz, $Durum = 'Up', $Duplex = $true, $Aciklama = 'Gercek Adaptor') {
+        [pscustomobject]@{ Name = $Ad; MediaType = $Medya; Speed = $Hiz; Status = $Durum; FullDuplex = $Duplex; InterfaceDescription = $Aciklama }
+    }
+    function Yeni-Durum($Fiziksel = @(), $Tumu = $null, $Guc = '381b4222-f694-41f0-9685-ff5bb260df2e', $Proxy = $false) {
+        if ($null -eq $Tumu) { $Tumu = $Fiziksel }
+        [pscustomobject]@{ FizikselAgBagdastiricilari = $Fiziksel; TumAgBagdastiricilari = $Tumu; GucPlaniGuid = $Guc; ProxyAcik = $Proxy }
+    }
+
+    It '100 Mbps Ethernet için öneri üretir, gigabit için üretmez' {
+        $o = @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]100000000)))))
+        $o.Count | Should Be 1
+        $o[0].Seviye | Should Be 'oneri'
+        $o[0].Baslik | Should Match "Ethernet 100 Mbps'te bağlı"
+        @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]1000000000))))).Count | Should Be 0
+    }
+    It 'hızı bilinmeyen veya bağlı olmayan bağdaştırıcı için öneri üretmez' {
+        @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' $null)))).Count | Should Be 0
+        @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]0))))).Count | Should Be 0
+        @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]10000000) 'Disconnected')))).Count | Should Be 0
+    }
+    It 'yarım dupleks Ethernet için öneri üretir' {
+        $o = @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]1000000000) 'Up' $false))))
+        $o.Count | Should Be 1
+        $o[0].Baslik | Should Match 'yarım dupleks'
+    }
+    It 'düşük Wi-Fi hızı için öneri üretir, yüksek hız için üretmez' {
+        $o = @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Wi-Fi' 'Native 802.11' ([uint64]54000000)))))
+        $o.Count | Should Be 1
+        $o[0].Baslik | Should Match 'Wi-Fi bağlantı hızı düşük: 54 Mbps'
+        @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Wi-Fi' 'Native 802.11' ([uint64]866000000))))).Count | Should Be 0
+    }
+    It 'birden fazla açık fiziksel bağdaştırıcıyı bilgi olarak bildirir' {
+        $o = @(Get-SistemOnerileri (Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]1000000000)), (Yeni-Adaptor 'Wi-Fi' 'Native 802.11' ([uint64]866000000)))))
+        $o.Count | Should Be 1
+        $o[0].Seviye | Should Be 'bilgi'
+        $o[0].Baslik | Should Match 'Ethernet, Wi-Fi'
+    }
+    It 'yalnızca açık VPN/tünel bağdaştırıcısını bildirir, sıradan bağdaştırıcıyı karıştırmaz' {
+        $vpn = Yeni-Adaptor 'WireGuard' '802.3' ([uint64]1000000000) 'Up' $true 'WireGuard Tunnel'
+        $kapali = Yeni-Adaptor 'NordLynx' '802.3' ([uint64]1000000000) 'Disconnected' $true 'NordLynx Tunnel'
+        $normal = Yeni-Adaptor 'Ethernet' '802.3' ([uint64]1000000000) 'Up' $true 'Realtek PCIe GbE Family Controller'
+        $o = @(Get-SistemOnerileri (Yeni-Durum @($normal) @($normal, $vpn, $kapali)))
+        $o.Count | Should Be 1
+        $o[0].Baslik | Should Match 'VPN/tünel bağdaştırıcısı etkin: WireGuard Tunnel'
+    }
+    It 'güç tasarrufu planını önerir, dengeli planı önermez' {
+        $o = @(Get-SistemOnerileri (Yeni-Durum @() $null 'a1841308-3541-4fab-bc81-f71556f20b4a'))
+        $o.Count | Should Be 1
+        $o[0].Seviye | Should Be 'oneri'
+        @(Get-SistemOnerileri (Yeni-Durum @() $null '381b4222-f694-41f0-9685-ff5bb260df2e')).Count | Should Be 0
+    }
+    It 'proxy açıksa bilgi verir, bilinmiyorsa susar' {
+        $o = @(Get-SistemOnerileri (Yeni-Durum @() $null $null $true))
+        $o.Count | Should Be 1
+        $o[0].Baslik | Should Match 'proxy'
+        @(Get-SistemOnerileri (Yeni-Durum @() $null $null $null)).Count | Should Be 0
+    }
+    It 'hiçbir bilgi toplanamadıysa hata vermeden boş döner' {
+        $bos = [pscustomobject]@{ FizikselAgBagdastiricilari = $null; TumAgBagdastiricilari = $null; GucPlaniGuid = $null; ProxyAcik = $null }
+        @(Get-SistemOnerileri $bos).Count | Should Be 0
+    }
+    It 'bağdaştırıcı sorgusu başarısız olsa da durum toplama hata vermez' {
+        Mock Get-NetAdapter { throw 'Erişim reddedildi.' }
+        $d = Get-SistemDurumu
+        $d.FizikselAgBagdastiricilari | Should BeNullOrEmpty
+        $d.TumAgBagdastiricilari | Should BeNullOrEmpty
+    }
+    It 'çıktıyı yazar: öneri uyarı, bilgi düz satır, hiçbiri yoksa dürüst bir not; ayar değiştirmez' {
+        Mock Baslik { }
+        Mock Yaz { }
+        Mock Basari { }
+        Mock Uyari { }
+        Mock Save-Ayarlar { throw 'Ayar yazılmamalı.' }
+        Mock Get-SistemDurumu {
+            Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]100000000)), (Yeni-Adaptor 'Wi-Fi' 'Native 802.11' ([uint64]866000000)))
+        }
+        $o = @(Invoke-Oneriler)
+        $o.Count | Should Be 2
+        Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match "Ethernet 100 Mbps'te bağlı" }
+        Assert-MockCalled Yaz -Scope It -ParameterFilter { $Metin -match '^  \[i\] Birden fazla fiziksel' }
+        Assert-MockCalled Basari -Times 0 -Exactly -Scope It
+        Mock Get-SistemDurumu { Yeni-Durum @((Yeni-Adaptor 'Ethernet' '802.3' ([uint64]1000000000))) }
+        Invoke-Oneriler | Out-Null
+        Assert-MockCalled Basari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match 'garanti etmez' }
+    }
+    It 'bağdaştırıcılar okunamazsa bunu açıkça bildirir' {
+        Mock Baslik { }
+        Mock Yaz { }
+        Mock Basari { }
+        Mock Uyari { }
+        Mock Get-SistemDurumu {
+            [pscustomobject]@{ FizikselAgBagdastiricilari = $null; TumAgBagdastiricilari = $null; GucPlaniGuid = $null; ProxyAcik = $null }
+        }
+        Invoke-Oneriler | Out-Null
+        Assert-MockCalled Uyari -Times 1 -Exactly -Scope It -ParameterFilter { $Metin -match 'okunamadı' }
+    }
+}

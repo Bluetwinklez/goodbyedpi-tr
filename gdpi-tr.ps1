@@ -457,12 +457,33 @@ function Test-GenelIPv6 {
     return [bool]$adresler
 }
 
-function Test-DnsSunucusu($Aday, [string[]]$Alanlar) {
+function Test-DnsSunucusu($Aday, [string[]]$Alanlar, [int]$Deneme = 1) {
+    # Her hedef için en çok $Deneme kez sorulur; yanıtsız kalan sorgu tekrarlanır (tek bir kayıp UDP
+    # paketi sunucuyu "ölü" göstermesin). Engelli adres döndüren sunucu ise hemen elenir.
     foreach ($h in $Alanlar) {
-        $ipler = Resolve-UdpDns $Aday.V4 $Aday.Port $h
-        if (-not $ipler -or (Test-EngelAdresi $ipler)) { return $false }
+        $tamam = $false
+        for ($i = 0; $i -lt [Math]::Max(1, $Deneme) -and -not $tamam; $i++) {
+            $ipler = Resolve-UdpDns $Aday.V4 $Aday.Port $h
+            if ($ipler) {
+                if (Test-EngelAdresi $ipler) { return $false }
+                $tamam = $true
+            }
+        }
+        if (-not $tamam) { return $false }
     }
     return $true
+}
+
+function Test-AyniAyar($Eski, $Yeni) {
+    # Profil araması mevcut ayarla aynı sonucu verdiyse hizmeti yeniden başlatmaya gerek yoktur.
+    if ($null -eq $Eski -or $null -eq $Yeni) { return $false }
+    if ($Eski.profil -cne $Yeni.profil -or $Eski.arg -cne $Yeni.arg) { return $false }
+    if ([bool]$Eski.genel -ne [bool]$Yeni.genel) { return $false }
+    $d1 = $Eski.dns
+    $d2 = $Yeni.dns
+    if ($null -eq $d1 -and $null -eq $d2) { return $true }
+    if ($null -eq $d1 -or $null -eq $d2) { return $false }
+    return ($d1.V4 -eq $d2.V4) -and ([int]$d1.Port -eq [int]$d2.Port) -and ([bool]$d1.V6Etkin -eq [bool]$d2.V6Etkin)
 }
 
 function Measure-DnsAdayi($Aday, [string[]]$Alanlar, [int]$Tekrar = 3) {
@@ -2198,7 +2219,8 @@ function Invoke-Bekci {
     }
 
     # 1) Yönlendirilen DNS sunucusu hâlâ yanıt veriyor mu? Vermiyorsa tüm DNS çöker.
-    if ($ayar.dns -and -not (Test-DnsSunucusu $ayar.dns @($kontrolAlani))) {
+    #    Tek bir kayıp paket yüzünden sunucu değiştirilmesin diye üç kez denenir.
+    if ($ayar.dns -and -not (Test-DnsSunucusu $ayar.dns @($kontrolAlani) 3)) {
         Yaz "DNS sunucusu yanıt vermiyor: $($ayar.dns.Ad)"
         $yeni = Find-DnsSunucusu @($kontrolAlani)
         if ($yeni) {
@@ -2252,11 +2274,16 @@ function Invoke-Bekci {
         $durum.sonYenidenBul = (Get-Date).ToString('s'); & $kaydet
         $yeni = Invoke-Bul -Hedefler @($ayar.hedefler) -Genel:([bool]$ayar.genel) -Kaydetme
         if ($yeni) {
-            Update-HizmetKomutu $yeni
+            # Hizmet bekçi tarafından durdurulmuşsa (durduruldu) yeniden başlatmak için her durumda uygulanır.
+            if (-not $durum.durduruldu -and (Test-AyniAyar $ayar $yeni)) {
+                Yaz 'Profil yeniden arandı; mevcut profil ve DNS korundu, hizmet yeniden başlatılmadı.'
+            } else {
+                Update-HizmetKomutu $yeni
+                Yaz "Yeni profil uygulandı: $($yeni.profil)"
+            }
             $durum.ardisikHata = 0
             $durum.durduruldu = $null
             $durum.durdurmaNedeni = $null
-            Yaz "Yeni profil uygulandı: $($yeni.profil)"
         }
     }
 
